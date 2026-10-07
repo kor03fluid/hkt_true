@@ -407,6 +407,9 @@ const calmRoll = new Map(); // wrist twist averaged over a few frames: shake can
 // after smoothing, a deliberate twist is ~0.05 rad
 const dead = () => 0.006 + 0.016 * (1.5 - ui.sens);
 const dwellTime = () => 0.6 + Math.max(0, 1 - ui.sens) * 0.6;
+// rotation by hand gets its own gain on top of the sensitivity, so it can be livelier than the rest
+const ROT_GAIN = 2.2; // hand move -> yaw / pitch
+const ROLL_GAIN = 1.5; // wrist twist -> roll
 const WARMUP = 0.4; // s: a hand that just came into view is ignored while its tracking settles...
 const WARMUP_FRAMES = 8; // ...and for at least this many tracking frames
 const STILL = 110; // px/s: the explode only follows the hand while the palm is about this still
@@ -526,12 +529,12 @@ function control(t, dt) {
     // moving the open hand rotates the model. The dead zone is a palm speed (px/s, so it does not
     // depend on the frame rate) and is subtracted, so there is no jump at its edge.
     if (g === 'OPEN' && prev && step > 0) {
-      const dz = 40 + (1.5 - ui.sens) * 60;
+      const dz = 30 + (1.5 - ui.sens) * 40;
       if (speed > dz) {
-        const k = (1 - dz / speed) * ui.sens;
+        const k = (1 - dz / speed) * ui.sens * ROT_GAIN;
         scene.rotateBy((palmPx.x - prev.x) * k * 0.0048, (palmPx.y - prev.y) * k * 0.0032, dt);
       }
-      if (twist) scene.rollBy(twist * 0.7 * ui.sens);
+      if (twist) scene.rollBy(twist * 0.7 * ui.sens * ROLL_GAIN);
     }
     scene.setHover(-1);
     setActive(g === 'OPEN' && speed > STILL ? 'MOVE' : g);
