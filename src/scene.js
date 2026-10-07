@@ -1,4 +1,5 @@
-// Three.js renderer for STL assemblies: one mesh per part, explode along part-centre directions,
+// Three.js renderer for STL assemblies: one mesh per part, hologram or solid look, two explode modes
+// (spherical expansion by Euclidean distance, or the hand-tuned moves from tools/explode.json),
 // per-part drag / twist, ray picking (BVH accelerated), highlight, x-ray and isolate.
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
@@ -16,6 +17,40 @@ const FIT = 3.0; // radius of the exploded model in world units
 const EDGE_TRI_LIMIT = 150000; // skip feature edges on very dense parts
 const DEFAULT_VIEW = { x: 0.38, y: -0.62, z: 0, zoom: 1 };
 const UP_ROT = { z: [-Math.PI / 2, 0, 0], y: [0, 0, 0], x: [0, 0, Math.PI / 2] };
+// spherical explode: every part moves away from the assembly centre by SPHERE_GAIN x its Euclidean
+// distance from it (at 100 %), so the assembly inflates like a sphere and far parts travel furthest
+const SPHERE_GAIN = 1.4;
+const SPHERE_MIN = 0.08; // parts closer to the centre than this share of the radius still move a little
+const HOT = new THREE.Color('#ffb547'); // selection accent (amber, like the HUD in the references)
+
+const HOLO_VERT = /* glsl */ `
+varying vec3 vView;
+varying vec3 vWorld;
+void main() {
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  vView = -mv.xyz;
+  vWorld = (modelMatrix * vec4(position, 1.0)).xyz;
+  gl_Position = projectionMatrix * mv;
+}`;
+const HOLO_FRAG = /* glsl */ `
+uniform vec3 uColor;
+uniform vec3 uHotColor;
+uniform float uOpacity;
+uniform float uHot;
+uniform float uTime;
+varying vec3 vView;
+varying vec3 vWorld;
+void main() {
+  vec3 n = normalize(cross(dFdx(vView), dFdy(vView))); // facet normal, works for any mesh
+  float facing = abs(dot(n, normalize(vView)));
+  float rim = pow(1.0 - facing, 2.0);
+  float scan = 0.82 + 0.18 * sin(gl_FragCoord.y * 1.6 + uTime * 6.0);   // fine projector lines
+  float band = smoothstep(0.93, 1.0, fract(vWorld.y * 0.22 - uTime * 0.18)); // slow sweep
+  vec3 col = uColor * (0.35 + 0.35 * facing + 1.6 * rim) + vec3(0.75, 0.95, 1.0) * band * 0.35;
+  col = mix(col, uHotColor * (0.7 + 1.4 * rim), uHot * 0.75);
+  float a = uOpacity * (0.16 + 0.55 * rim + 0.12 * band) * scan;
+  gl_FragColor = vec4(col * a, a);
+}`;
 
 /** Packed part (see tools/build_models.py) -> indexed geometry in the original assembly coordinates. */
 function unpack(bin, p) {
@@ -33,6 +68,65 @@ function unpack(bin, p) {
 }
 
 const partColor = (i) => '#' + new THREE.Color().setHSL((0.09 + i * 0.618034) % 1, 0.6, 0.62).getHexString();
+// hologram: every part in the cyan / blue family, still told apart by a small hue step
+const holoColor = (i) => '#' + new THREE.Color().setHSL(0.52 + (((i * 0.618034) % 1) - 0.5) * 0.16, 0.95, 0.6).getHexString();
+
+/** Soft round sprite for the glowing dots on the sphere. */
+function dotTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const r = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  r.addColorStop(0, 'rgba(255,255,255,1)');
+  r.addColorStop(0.25, 'rgba(160,240,255,0.9)');
+  r.addColorStop(1, 'rgba(60,200,255,0)');
+  g.fillStyle = r;
+  g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+
+/** Unit wireframe sphere (poles on +-Z, the model's up) with glowing dots, shown while exploding. */
+function makeGlobe() {
+  const pts = [];
+  const seg = 72;
+  for (let lat = -75; lat <= 75; lat += 25) {
+    const z = Math.sin((lat * Math.PI) / 180), r = Math.cos((lat * Math.PI) / 180);
+    for (let k = 0; k < seg; k++) {
+      const a0 = (k / seg) * Math.PI * 2, a1 = ((k + 1) / seg) * Math.PI * 2;
+      pts.push(r * Math.cos(a0), r * Math.sin(a0), z, r * Math.cos(a1), r * Math.sin(a1), z);
+    }
+  }
+  for (let m = 0; m < 12; m++) {
+    const a = (m / 12) * Math.PI * 2;
+    for (let k = 0; k < seg / 2; k++) {
+      const b0 = -Math.PI / 2 + (k / (seg / 2)) * Math.PI, b1 = -Math.PI / 2 + ((k + 1) / (seg / 2)) * Math.PI;
+      pts.push(Math.cos(b0) * Math.cos(a), Math.cos(b0) * Math.sin(a), Math.sin(b0), Math.cos(b1) * Math.cos(a), Math.cos(b1) * Math.sin(a), Math.sin(b1));
+    }
+  }
+  const lineGeo = new THREE.BufferGeometry();
+  lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  const lines = new THREE.LineSegments(
+    lineGeo,
+    new THREE.LineBasicMaterial({ color: '#4fd8ff', transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }),
+  );
+  // evenly spread dots (Fibonacci sphere)
+  const n = 420, dots = [];
+  for (let i = 0; i < n; i++) {
+    const z = 1 - (2 * (i + 0.5)) / n, r = Math.sqrt(1 - z * z), a = i * 2.399963;
+    dots.push(r * Math.cos(a), r * Math.sin(a), z);
+  }
+  const dotGeo = new THREE.BufferGeometry();
+  dotGeo.setAttribute('position', new THREE.Float32BufferAttribute(dots, 3));
+  const points = new THREE.Points(
+    dotGeo,
+    new THREE.PointsMaterial({ map: dotTexture(), color: '#7fe8ff', size: 9, sizeAttenuation: false, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }),
+  );
+  const g = new THREE.Group();
+  g.add(lines, points);
+  lines.raycast = points.raycast = () => {};
+  g.userData = { lines, points };
+  return g;
+}
 
 export class StlScene {
   constructor(canvas) {
@@ -77,7 +171,13 @@ export class StlScene {
     this.xray = false;
     this.isolate = false;
     this.edges = true;
+    this.holo = true; // hologram look (false = solid CAD look)
+    this.explodeMode = 'sphere'; // 'sphere' (Euclidean expansion) | 'tuned' (tools/explode.json)
+    this.modeBlend = 1; // 1 = sphere, 0 = tuned; animated when the mode changes
     this.shift = 0;
+    this.time = { value: 0 }; // shared shader clock
+    this.globe = makeGlobe();
+    this.globeR = 0; // current sphere radius in assembly units
 
     this.onModel = null; // (index, entry)
     this.onLoading = null; // (name, fraction 0..1, label) | null when finished
@@ -163,16 +263,37 @@ export class StlScene {
       geo.computeBoundingSphere();
       geo.computeBoundsTree();
 
-      let dir;
+      let dir; // hand-tuned move (tools/explode.json), or a fallback away from the centre
       if (Array.isArray(info.offset)) dir = new THREE.Vector3(...info.offset);
       else if (Array.isArray(info.explode)) dir = new THREE.Vector3(...info.explode).multiplyScalar(R * 0.7);
       else {
         const len = pc.length();
         dir = len < R * 0.02 ? new THREE.Vector3() : pc.clone().multiplyScalar(1.3).addScaledVector(pc.clone().normalize(), R * 0.2);
       }
-      maxR = Math.max(maxR, pc.clone().add(dir).length() + size.length() / 2);
+      // spherical move: along the ray from the centre, length = gain x Euclidean distance
+      const dist = pc.length();
+      const away = dist > R * 1e-4 ? pc.clone().divideScalar(dist) : dir.lengthSq() > 0 ? dir.clone().normalize() : new THREE.Vector3(0, 0, 1);
+      const dirSphere = away.multiplyScalar(SPHERE_GAIN * Math.max(dist, R * SPHERE_MIN));
+      const rad = size.length() / 2;
+      maxR = Math.max(maxR, pc.clone().add(dir).length() + rad, pc.clone().add(dirSphere).length() + rad);
 
       const color = info.color || partColor(idx);
+      const holoCol = holoColor(idx);
+      const holoMat = new THREE.ShaderMaterial({
+        vertexShader: HOLO_VERT,
+        fragmentShader: HOLO_FRAG,
+        uniforms: {
+          uColor: { value: new THREE.Color(holoCol) },
+          uHotColor: { value: HOT },
+          uOpacity: { value: 1 },
+          uHot: { value: 0 },
+          uTime: this.time,
+        },
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+      });
       const mat = new THREE.MeshStandardMaterial({
         color,
         metalness: 0.28,
@@ -185,17 +306,16 @@ export class StlScene {
         polygonOffsetFactor: 1,
         polygonOffsetUnits: 1,
       });
-      const mesh = new THREE.Mesh(geo, mat);
+      const mesh = new THREE.Mesh(geo, this.holo ? holoMat : mat);
       mesh.userData.i = idx;
       const pivot = new THREE.Group();
       pivot.add(mesh);
       const tris = (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
       let edges = null;
       if (tris <= EDGE_TRI_LIMIT) {
-        edges = new THREE.LineSegments(
-          new THREE.EdgesGeometry(geo, 28),
-          new THREE.LineBasicMaterial({ color: new THREE.Color(color).lerp(new THREE.Color('#ffffff'), 0.55), transparent: true, opacity: 0.4 }),
-        );
+        edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 28), new THREE.LineBasicMaterial({ transparent: true, opacity: 0.4 }));
+        edges.userData.solid = new THREE.Color(color).lerp(new THREE.Color('#ffffff'), 0.55);
+        edges.userData.holo = new THREE.Color(holoCol).lerp(new THREE.Color('#ffffff'), 0.35);
         edges.raycast = () => {};
         pivot.add(edges);
       }
@@ -205,14 +325,20 @@ export class StlScene {
         name: info.name || partLabel(src.file.split('/').pop()),
         file: src.file,
         desc: info.desc || '',
-        color,
+        color: this.holo ? holoCol : color,
+        colorSolid: color,
+        colorHolo: holoCol,
         size,
+        rad,
         tris,
         base: pc,
         dir,
+        dirSphere,
         mesh,
         edges,
         mat,
+        holoMat,
+        hot: 0,
         pivot,
         visible: true,
         offset: new THREE.Vector3(),
@@ -222,7 +348,8 @@ export class StlScene {
         look: '',
       };
     });
-    return { def, asm, parts, fit: FIT / maxR, failed };
+    const r0 = Math.max(...parts.map((p) => p.base.length() + p.rad * 0.5));
+    return { def, asm, parts, fit: FIT / maxR, failed, r0 };
   }
 
   /** Downloads a packed model (.bin) with a progress bar. */
@@ -287,6 +414,8 @@ export class StlScene {
     this.parts = e.parts;
     this.index = i;
     this.root.add(e.asm);
+    e.asm.add(this.globe);
+    this.globeR = 0;
     this.hover = this.sel = this.grabbed = -1;
     this.resetView(true);
     this.onModel?.(i, e);
@@ -301,6 +430,17 @@ export class StlScene {
   }
   setVisible(i, v) {
     if (this.parts[i]) this.parts[i].visible = v;
+  }
+  /** Hologram or solid look, for every loaded model. */
+  setHolo(v) {
+    this.holo = v;
+    for (const e of this.cache.values()) {
+      if (!e.parts) continue; // still loading
+      for (const p of e.parts) {
+        p.color = v ? p.colorHolo : p.colorSolid;
+        p.look = '';
+      }
+    }
   }
   rotateBy(dyaw, dpitch, dt = 1 / 60) {
     this.rot.y += dyaw;
@@ -407,23 +547,37 @@ export class StlScene {
   centerScreen() {
     return this._screen(this.root.getWorldPosition(new THREE.Vector3()));
   }
+  /** Screen centre and radius (px) of the assembly sphere, for the HUD rings. */
+  hud() {
+    if (!this.entry) return null;
+    const c = this._screen(this.entry.asm.getWorldPosition(new THREE.Vector3()));
+    const r = (Math.max(this.globeR, this.entry.r0) * this.root.scale.x) / this.unitsPerPx;
+    return { ...c, r, explode: clamp(this.explode, 0, 1), scale: this.scale, sphere: this.modeBlend };
+  }
 
   // ------------------------------------------------------------------ frame
   _look(p) {
     const ghost = (this.isolate && this.sel >= 0 && p.i !== this.sel) || (this.xray && p.i !== this.sel && p.i !== this.hover);
     const hot = p.i === this.hover || p.i === this.sel || p.i === this.grabbed;
-    const key = `${p.visible}|${ghost}|${hot}|${this.edges}|${this.isolate}`;
+    const key = `${p.visible}|${ghost}|${hot}|${this.edges}|${this.isolate}|${this.holo}`;
     if (key === p.look) return;
     p.look = key;
     p.pivot.visible = p.visible;
+    p.mesh.material = this.holo ? p.holoMat : p.mat;
+    p.holoMat.uniforms.uOpacity.value = ghost ? (this.isolate ? 0.06 : 0.3) : 1;
     p.mat.transparent = ghost;
     p.mat.opacity = ghost ? (this.isolate ? 0.08 : 0.22) : 1;
     p.mat.depthWrite = !ghost;
     p.mat.emissiveIntensity = hot ? 0.55 : 0.05;
     p.mat.needsUpdate = true;
     if (p.edges) {
+      const m = p.edges.material;
       p.edges.visible = this.edges && !(ghost && this.isolate);
-      p.edges.material.opacity = hot ? 0.9 : ghost ? 0.18 : 0.4;
+      m.color.copy(hot && this.holo ? HOT : this.holo ? p.edges.userData.holo : p.edges.userData.solid);
+      m.blending = this.holo ? THREE.AdditiveBlending : THREE.NormalBlending;
+      m.depthWrite = !this.holo;
+      m.opacity = this.holo ? (hot ? 0.95 : ghost ? 0.1 : 0.42) : hot ? 0.9 : ghost ? 0.18 : 0.4;
+      m.needsUpdate = true;
     }
   }
 
@@ -451,16 +605,32 @@ export class StlScene {
       if (this.autoSpin && this.idle > 2.0 && Math.hypot(this.vel.x, this.vel.y) < 0.05) this.rot.y += 0.14 * dt;
     }
 
+    this.time.value += dt;
+    this.modeBlend = damp(this.modeBlend, this.explodeMode === 'sphere' ? 1 : 0, 4, dt);
     if (this.entry) {
       const e = this.shownExplode;
+      const m = this.modeBlend;
+      let reach = 0;
       for (const p of this.parts) {
         const fast = p.i === this.grabbed ? 18 : 6;
         p.offset.lerp(p.offsetT, 1 - Math.exp(-fast * dt));
         p.q.slerp(p.qT, 1 - Math.exp(-fast * dt));
-        p.pivot.position.copy(p.base).addScaledVector(p.dir, e).add(p.offset);
+        p.pivot.position.copy(p.base).addScaledVector(p.dir, e * (1 - m)).addScaledVector(p.dirSphere, e * m).add(p.offset);
         p.pivot.quaternion.copy(p.q);
+        if (p.visible) reach = Math.max(reach, p.pivot.position.length() + p.rad * 0.5);
+        const hot = p.i === this.hover || p.i === this.sel || p.i === this.grabbed ? 1 : 0;
+        p.hot = damp(p.hot, hot, 10, dt);
+        p.holoMat.uniforms.uHot.value = p.hot;
         this._look(p);
       }
+      // the sphere wraps the expanding parts; it fades in with the explode (sphere mode only)
+      this.globeR = this.globeR ? damp(this.globeR, reach, 8, dt) : reach;
+      const show = clamp((e - 0.04) / 0.3, 0, 1) * m * (this.holo ? 1 : 0.6);
+      this.globe.visible = show > 0.01;
+      this.globe.scale.setScalar(Math.max(1e-3, this.globeR));
+      this.globe.rotation.z += dt * 0.12;
+      this.globe.userData.lines.material.opacity = 0.16 * show;
+      this.globe.userData.points.material.opacity = 0.75 * show;
       const ease = 1 - Math.pow(1 - clamp(this.pop, 0, 1), 3);
       this.root.rotation.set(this.rot.x, this.rot.y + (1 - ease) * 0.8, this.rot.z, 'YXZ');
       this.root.scale.setScalar(this.entry.fit * this.scale * Math.max(1e-3, ease));

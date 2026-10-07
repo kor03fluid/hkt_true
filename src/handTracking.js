@@ -54,9 +54,10 @@ export class HandTracker {
               baseOptions: { modelAssetPath: m.url, delegate },
               runningMode: 'VIDEO',
               numHands: 2,
-              minHandDetectionConfidence: 0.55,
-              minHandPresenceConfidence: 0.5,
-              minTrackingConfidence: 0.5,
+              // stricter than the MediaPipe defaults: fewer phantom hands and jitter
+              minHandDetectionConfidence: 0.65,
+              minHandPresenceConfidence: 0.6,
+              minTrackingConfidence: 0.6,
             });
             this.ready = true;
             this.info = `${delegate} / ${m.tag}`;

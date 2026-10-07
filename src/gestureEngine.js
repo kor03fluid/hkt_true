@@ -37,6 +37,8 @@ export class GestureEngine {
   constructor() {
     this.states = new Map();
     this.lastT = 0;
+    // 0.2 (calm) .. 1.5 (twitchy); lower = a gesture must hold longer and a pinch must be tighter
+    this.sens = 0.55;
   }
   reset() {
     this.states.clear();
@@ -91,7 +93,8 @@ export class GestureEngine {
     // pinch with hysteresis
     const pr = d(4, 8) / size;
     const canPinch = d(8, 0) / Math.max(1e-4, d(6, 0)) > 0.88;
-    if (!st.pinching && pr < 0.32 && canPinch) st.pinching = true;
+    const pinchIn = 0.24 + 0.06 * Math.min(1.3, this.sens);
+    if (!st.pinching && pr < pinchIn && canPinch) st.pinching = true;
     else if (st.pinching && (pr > 0.5 || !canPinch)) st.pinching = false;
 
     let g = 'NONE';
@@ -106,7 +109,9 @@ export class GestureEngine {
       st.cand = g;
       st.streak = 1;
     }
-    const need = g === 'PINCH' ? 2 : g === 'PEACE' ? 8 : 3;
+    // frames a new gesture must hold before it takes over
+    const hold = 1 + Math.max(0, 1 - this.sens) * 1.6;
+    const need = Math.round((g === 'PINCH' ? 2 : g === 'PEACE' ? 8 : 3) * hold);
     if (st.streak >= need && st.stable !== st.cand) st.stable = st.cand;
 
     // viewport-space positions
