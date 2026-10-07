@@ -1,0 +1,46 @@
+{
+  "_comment": "Explode move per part at 100% explode, in mm in the original STL coordinates (Z up). Worked out from each part's bounding box so every part clears its neighbours. Applied by tools/build_models.py (run with --manifest-only after editing this file).",
+  "Turret": {
+    "L-01_다리_x3.stl": [0, 0, -110],
+    "B-01_베이스_하우징.stl": [0, 0, -55],
+    "B-02_중간데크판.stl": [0, 0, 5],
+    "B-03_베이스_상판.stl": [0, 0, 15],
+    "B-04_베어링_타워.stl": [0, 0, 40],
+    "B-05_팬_허브.stl": [0, 0, 70],
+    "Y-01_턴테이블.stl": [0, 0, 95],
+    "Y-02_요크_좌.stl": [-45, 0, 110],
+    "Y-03_요크_우.stl": [45, 0, 110],
+    "H-01v4_틸트_프레임.stl": [0, 0, 125],
+    "H-08_웹캠_데크.stl": [0, 0, 140],
+    "H-10_LED_DEMO_MOUNT.stl": [0, 0, 165],
+    "H-09_안전그물_데모모듈.stl": [130, 0, 125],
+    "H-03_피스톤.stl": [210, -25, 125],
+    "H-05_그물_카트리지.stl": [210, 15, 125],
+    "H-06_그물추_시험용.stl": [210, 55, 125],
+    "H-04_래치_레버.stl": [210, -25, 160]
+  },
+  "hailo-Modern": {
+    "Modern_Helmet_DH-01.stl": [0, 0, 0],
+    "Modern_Rear_Cable_Cover_HP-05.stl": [-90, 0, 30],
+    "Modern_Left_Adapter_JawInsert_HP-03A-I-L.stl": [0, 25, 0],
+    "Modern_Left_Adapter_Rail_HP-03A-L.stl": [0, 50, 0],
+    "Modern_Left_Pod_RearCover_HP-02L.stl": [0, 85, 0],
+    "Modern_Left_Pod_Housing_HP-01L.stl": [0, 120, 0],
+    "Modern_Left_Paddle_HP-04.stl": [0, 160, 15],
+    "Modern_Right_Adapter_JawInsert_HP-03A-I-R.stl": [0, -25, 0],
+    "Modern_Right_Adapter_Rail_HP-03A-R.stl": [0, -50, 0],
+    "Modern_Right_Pod_RearCover_HP-02R.stl": [0, -85, 0],
+    "Modern_Right_Pod_Housing_HP-01R.stl": [0, -120, 0]
+  },
+  "hailo-Legacy": {
+    "Legacy_Helmet_DH-02.stl": [0, 0, 0],
+    "Legacy_Rear_Cable_Cover_HP-05.stl": [-90, 0, 30],
+    "Legacy_Left_Adapter_Band_HP-03B-L.stl": [0, 30, 0],
+    "Legacy_Left_Pod_RearCover_HP-02L.stl": [0, 70, 0],
+    "Legacy_Left_Pod_Housing_HP-01L.stl": [0, 110, 0],
+    "Legacy_Left_Paddle_HP-04.stl": [0, 150, 15],
+    "Legacy_Right_Adapter_Band_HP-03B-R.stl": [0, -30, 0],
+    "Legacy_Right_Pod_RearCover_HP-02R.stl": [0, -70, 0],
+    "Legacy_Right_Pod_Housing_HP-01R.stl": [0, -110, 0]
+  }
+}

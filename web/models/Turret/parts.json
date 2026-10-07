@@ -1,0 +1,160 @@
+{
+  "name": "Turret",
+  "subtitle": "Turret/ 원본 STL 17개 · 좌표 그대로",
+  "up": "z",
+  "parts": {
+    "B-01_베이스_하우징.stl": {
+      "name": "B-01 베이스 하우징",
+      "source": "Turret/Turret/B-01_베이스_하우징.stl",
+      "offset": [
+        0,
+        0,
+        -55
+      ]
+    },
+    "B-02_중간데크판.stl": {
+      "name": "B-02 중간데크판",
+      "source": "Turret/Turret/B-02_중간데크판.stl",
+      "offset": [
+        0,
+        0,
+        5
+      ]
+    },
+    "B-03_베이스_상판.stl": {
+      "name": "B-03 베이스 상판",
+      "source": "Turret/Turret/B-03_베이스_상판.stl",
+      "offset": [
+        0,
+        0,
+        15
+      ]
+    },
+    "B-04_베어링_타워.stl": {
+      "name": "B-04 베어링 타워",
+      "source": "Turret/Turret/B-04_베어링_타워.stl",
+      "offset": [
+        0,
+        0,
+        40
+      ]
+    },
+    "B-05_팬_허브.stl": {
+      "name": "B-05 팬 허브",
+      "source": "Turret/Turret/B-05_팬_허브.stl",
+      "offset": [
+        0,
+        0,
+        70
+      ]
+    },
+    "H-01v4_틸트_프레임.stl": {
+      "name": "H-01v4 틸트 프레임",
+      "source": "Turret/Turret/H-01v4_틸트_프레임.stl",
+      "offset": [
+        0,
+        0,
+        125
+      ]
+    },
+    "H-03_피스톤.stl": {
+      "name": "H-03 피스톤",
+      "source": "Turret/Turret/H-03_피스톤.stl",
+      "offset": [
+        210,
+        -25,
+        125
+      ]
+    },
+    "H-04_래치_레버.stl": {
+      "name": "H-04 래치 레버",
+      "source": "Turret/Turret/H-04_래치_레버.stl",
+      "offset": [
+        210,
+        -25,
+        160
+      ]
+    },
+    "H-05_그물_카트리지.stl": {
+      "name": "H-05 그물 카트리지",
+      "source": "Turret/Turret/H-05_그물_카트리지.stl",
+      "offset": [
+        210,
+        15,
+        125
+      ]
+    },
+    "H-06_그물추_시험용.stl": {
+      "name": "H-06 그물추 시험용",
+      "source": "Turret/Turret/H-06_그물추_시험용.stl",
+      "offset": [
+        210,
+        55,
+        125
+      ]
+    },
+    "H-08_웹캠_데크.stl": {
+      "name": "H-08 웹캠 데크",
+      "source": "Turret/Turret/H-08_웹캠_데크.stl",
+      "offset": [
+        0,
+        0,
+        140
+      ]
+    },
+    "H-09_안전그물_데모모듈.stl": {
+      "name": "H-09 안전그물 데모모듈",
+      "source": "Turret/Turret/H-09_안전그물_데모모듈.stl",
+      "offset": [
+        130,
+        0,
+        125
+      ]
+    },
+    "H-10_LED_DEMO_MOUNT.stl": {
+      "name": "H-10 LED DEMO MOUNT",
+      "source": "Turret/Turret/H-10_LED_DEMO_MOUNT.stl",
+      "offset": [
+        0,
+        0,
+        165
+      ]
+    },
+    "L-01_다리_x3.stl": {
+      "name": "L-01 다리 x3",
+      "source": "Turret/Turret/L-01_다리_x3.stl",
+      "offset": [
+        0,
+        0,
+        -110
+      ]
+    },
+    "Y-01_턴테이블.stl": {
+      "name": "Y-01 턴테이블",
+      "source": "Turret/Turret/Y-01_턴테이블.stl",
+      "offset": [
+        0,
+        0,
+        95
+      ]
+    },
+    "Y-02_요크_좌.stl": {
+      "name": "Y-02 요크 좌",
+      "source": "Turret/Turret/Y-02_요크_좌.stl",
+      "offset": [
+        -45,
+        0,
+        110
+      ]
+    },
+    "Y-03_요크_우.stl": {
+      "name": "Y-03 요크 우",
+      "source": "Turret/Turret/Y-03_요크_우.stl",
+      "offset": [
+        45,
+        0,
+        110
+      ]
+    }
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "name": "hailo Modern",
+  "subtitle": "hailo/ 원본 STL 11개 · 좌표 그대로",
+  "up": "z",
+  "view": {
+    "x": 0.42,
+    "y": -1.2,
+    "zoom": 0.8
+  },
+  "parts": {
+    "Modern_Helmet_DH-01.stl": {
+      "name": "DH-01 Helmet",
+      "source": "hailo/hailo/Modern_Helmet_DH-01.stl",
+      "offset": [
+        0,
+        0,
+        0
+      ]
+    },
+    "Modern_Left_Adapter_JawInsert_HP-03A-I-L.stl": {
+      "name": "HP-03A-I-L Left Adapter JawInsert",
+      "source": "hailo/hailo/Modern_Left_Adapter_JawInsert_HP-03A-I-L.stl",
+      "offset": [
+        0,
+        25,
+        0
+      ]
+    },
+    "Modern_Left_Adapter_Rail_HP-03A-L.stl": {
+      "name": "HP-03A-L Left Adapter Rail",
+      "source": "hailo/hailo/Modern_Left_Adapter_Rail_HP-03A-L.stl",
+      "offset": [
+        0,
+        50,
+        0
+      ]
+    },
+    "Modern_Left_Paddle_HP-04.stl": {
+      "name": "HP-04 Left Paddle",
+      "source": "hailo/hailo/Modern_Left_Paddle_HP-04.stl",
+      "offset": [
+        0,
+        160,
+        15
+      ]
+    },
+    "Modern_Left_Pod_Housing_HP-01L.stl": {
+      "name": "HP-01L Left Pod Housing",
+      "source": "hailo/hailo/Modern_Left_Pod_Housing_HP-01L.stl",
+      "offset": [
+        0,
+        120,
+        0
+      ]
+    },
+    "Modern_Left_Pod_RearCover_HP-02L.stl": {
+      "name": "HP-02L Left Pod RearCover",
+      "source": "hailo/hailo/Modern_Left_Pod_RearCover_HP-02L.stl",
+      "offset": [
+        0,
+        85,
+        0
+      ]
+    },
+    "Modern_Rear_Cable_Cover_HP-05.stl": {
+      "name": "HP-05 Rear Cable Cover",
+      "source": "hailo/hailo/Modern_Rear_Cable_Cover_HP-05.stl",
+      "offset": [
+        -90,
+        0,
+        30
+      ]
+    },
+    "Modern_Right_Adapter_JawInsert_HP-03A-I-R.stl": {
+      "name": "HP-03A-I-R Right Adapter JawInsert",
+      "source": "hailo/hailo/Modern_Right_Adapter_JawInsert_HP-03A-I-R.stl",
+      "offset": [
+        0,
+        -25,
+        0
+      ]
+    },
+    "Modern_Right_Adapter_Rail_HP-03A-R.stl": {
+      "name": "HP-03A-R Right Adapter Rail",
+      "source": "hailo/hailo/Modern_Right_Adapter_Rail_HP-03A-R.stl",
+      "offset": [
+        0,
+        -50,
+        0
+      ]
+    },
+    "Modern_Right_Pod_Housing_HP-01R.stl": {
+      "name": "HP-01R Right Pod Housing",
+      "source": "hailo/hailo/Modern_Right_Pod_Housing_HP-01R.stl",
+      "offset": [
+        0,
+        -120,
+        0
+      ]
+    },
+    "Modern_Right_Pod_RearCover_HP-02R.stl": {
+      "name": "HP-02R Right Pod RearCover",
+      "source": "hailo/hailo/Modern_Right_Pod_RearCover_HP-02R.stl",
+      "offset": [
+        0,
+        -85,
+        0
+      ]
+    }
+  }
+}
