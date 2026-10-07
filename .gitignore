@@ -3,3 +3,4 @@ dist
 public/wasm
 public/models
 __pycache__
+release/.tmp

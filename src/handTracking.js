@@ -1,10 +1,17 @@
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 
-const CDN_WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
+// local copies (scripts/setup.mjs) are looked up next to the page, so the build works from any sub-path
+const BASE = import.meta.env.BASE_URL;
+// two CDNs, because some school / company networks block one of them
+const CDN_WASM = [
+  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm',
+  'https://unpkg.com/@mediapipe/tasks-vision@0.10.14/wasm',
+];
 const CDN_MODEL =
   'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
 async function localExists(url) {
+  if (location.protocol === 'file:') return false; // opened from disk (single-file build): no local copies
   try {
     const r = await fetch(url, { method: 'HEAD' });
     const type = r.headers.get('content-type') || '';
@@ -25,11 +32,11 @@ export class HandTracker {
   async init() {
     let lastErr = null;
     const wasmBases = [];
-    if (await localExists('/wasm/vision_wasm_internal.js')) wasmBases.push({ url: '/wasm', tag: 'LOCAL' });
-    wasmBases.push({ url: CDN_WASM, tag: 'CDN' });
+    if (await localExists(`${BASE}wasm/vision_wasm_internal.js`)) wasmBases.push({ url: `${BASE}wasm`, tag: 'LOCAL' });
+    for (const url of CDN_WASM) wasmBases.push({ url, tag: 'CDN' });
 
     const models = [];
-    if (await localExists('/models/hand_landmarker.task')) models.push({ url: '/models/hand_landmarker.task', tag: 'LOCAL' });
+    if (await localExists(`${BASE}models/hand_landmarker.task`)) models.push({ url: `${BASE}models/hand_landmarker.task`, tag: 'LOCAL' });
     models.push({ url: CDN_MODEL, tag: 'CDN' });
 
     for (const wb of wasmBases) {

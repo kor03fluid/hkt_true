@@ -6,13 +6,16 @@ browser (~10M triangles per assembly). This script, for every part:
 
   1. reads the STL (binary or ASCII) and merges duplicate vertices,
   2. reduces the triangle count with quadric decimation (fast_simplification),
-  3. writes a binary STL to web/models/<model>/ - with NO transform, so every vertex stays in the
-     original assembly coordinate system and the parts still fit together exactly as exported,
-  4. checks the result against the original: bounding box and centre must match within TOL_MM,
-     and the reduced surface must stay close to the original one.
+  3. packs it into web/models/<model>.bin: vertices as 16-bit integers inside the part's own
+     bounding box (step = part size / 65535, i.e. well under 0.01 mm) plus 16/32-bit indices.
+     There is NO other transform, so every vertex stays in the original assembly coordinate
+     system and the parts still fit together exactly as exported,
+  4. checks the decoded result against the original: bounding box and centre must match within
+     TOL_MM, and the reduced surface must stay close to the original one.
 
-It also writes web/models/<model>/parts.json with part names and the explode moves from
-tools/explode.json, and reports parts whose bounding boxes still overlap at full explode.
+web/models/<model>.json holds the part table (byte ranges in the .bin, bounding boxes, names and
+the explode moves from tools/explode.json). Parts whose bounding boxes still overlap at full
+explode are reported.
 
 Run from the repo root:  python3 tools/build_models.py
 After editing only tools/explode.json:  python3 tools/build_models.py --manifest-only
@@ -59,19 +62,14 @@ def read_stl(path: Path) -> np.ndarray:
     return np.asarray(verts, dtype=np.float64).reshape(-1, 3, 3)
 
 
-def write_stl(path: Path, pts: np.ndarray, faces: np.ndarray, header: str) -> None:
-    tri = pts[faces].astype(np.float32)
-    nrm = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
-    ln = np.linalg.norm(nrm, axis=1, keepdims=True)
-    nrm = np.divide(nrm, ln, out=np.zeros_like(nrm), where=ln > 0)
-    rec = np.zeros(len(tri), dtype=np.dtype([("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")]))
-    rec["n"] = nrm
-    rec["v"] = tri
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(header.encode("ascii", "replace")[:80].ljust(80, b" "))
-        f.write(struct.pack("<I", len(tri)))
-        f.write(rec.tobytes())
+def pack(pts: np.ndarray, faces: np.ndarray):
+    """Quantise vertices to uint16 inside the part bounding box. Returns (min, max, q, idx, decoded)."""
+    mn, mx = pts.min(0), pts.max(0)
+    span = np.where(mx - mn > 0, mx - mn, 1.0)
+    q = np.round((pts - mn) / span * 65535).astype("<u2")
+    decoded = mn + q.astype(np.float64) * (span / 65535)
+    idx = faces.astype("<u2" if len(pts) <= 65536 else "<u4")
+    return mn, mx, q, idx, decoded
 
 
 def weld(tris: np.ndarray):
@@ -118,35 +116,33 @@ def source_files(model):
     return sorted(p for p in (ROOT / model["src"]).rglob("*") if p.suffix.lower() == ".stl" and p.name.startswith(model["match"]))
 
 
-def write_manifest(model, files):
-    """parts.json for the viewer: names, source file and explode move (mm) per part."""
+def apply_manifest(model, doc):
+    """Names, explode moves (mm) and view settings for the viewer; writes web/models/<key>.json."""
     moves = EXPLODE.get(model["key"], {})
-    names = {p.name for p in files}
+    names = {p["file"] for p in doc["parts"]}
     for extra in sorted(set(moves) - {"_comment"} - names):
         print(f"!! {model['name']}: explode.json lists {extra}, which has no STL")
-    manifest = {"name": model["name"], "subtitle": f"{model['src']}/ 원본 STL {len(files)}개 · 좌표 그대로", "up": "z"}
+    doc.update({"name": model["name"], "subtitle": f"{model['src']}/ 원본 STL {len(names)}개 · 좌표 그대로", "up": "z"})
+    doc.pop("view", None)
     if "view" in model:
-        manifest["view"] = model["view"]
-    manifest["parts"] = {}
-    for p in files:
-        entry = {"name": part_name(p.stem), "source": str(p.relative_to(ROOT))}
-        if p.name in moves:
-            entry["offset"] = moves[p.name]
+        doc["view"] = model["view"]
+    for p in doc["parts"]:
+        p["name"] = part_name(Path(p["file"]).stem)
+        if p["file"] in moves:
+            p["offset"] = moves[p["file"]]
         else:
-            print(f"!! {model['name']}: no explode move for {p.name} (viewer will use the automatic direction)")
-        manifest["parts"][p.name] = entry
-    out_dir = OUT / model["key"]
-    (out_dir / "parts.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return manifest
+            p.pop("offset", None)
+            print(f"!! {model['name']}: no explode move for {p['file']} (viewer will use the automatic direction)")
+    (OUT / f"{model['key']}.json").write_text(json.dumps(doc, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    return doc
 
 
-def clearance(model, manifest):
+def clearance(model, doc):
     """Pairs of parts whose bounding boxes still overlap at full explode (by volume share of the smaller box)."""
     boxes = {}
-    for name, entry in manifest["parts"].items():
-        v = read_stl(OUT / model["key"] / name).reshape(-1, 3)
-        off = np.array(entry.get("offset", [0, 0, 0]), dtype=float)
-        boxes[name] = (v.min(0) + off, v.max(0) + off)
+    for p in doc["parts"]:
+        off = np.array(p.get("offset", [0, 0, 0]), dtype=float)
+        boxes[p["file"]] = (np.array(p["min"]) + off, np.array(p["max"]) + off)
     hits = []
     keys = list(boxes)
     for i, a in enumerate(keys):
@@ -180,10 +176,9 @@ def build(model):
     w = np.array([len(x["faces"]) for x in parts], dtype=float) ** 0.6
     targets = np.clip(model["budget"] * w / w.sum(), MIN_TRIS, MAX_TRIS).astype(int)
 
-    out_dir = OUT / model["key"]
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for old in out_dir.glob("*.stl"):
-        old.unlink()
+    OUT.mkdir(parents=True, exist_ok=True)
+    blob = bytearray()
+    table = []
     rows, bad = [], []
     for x, target in zip(parts, targets):
         pts, faces = x["pts"], x["faces"]
@@ -201,15 +196,29 @@ def build(model):
         remap[used] = np.arange(len(used))
         npts, nfaces = npts[used], remap[nfaces]
 
+        mn, mx, q, idx, dec = pack(npts, nfaces)
+        # everything below is measured on the decoded vertices, i.e. exactly what the viewer draws
         src = x["tris"].reshape(-1, 3)
         b0 = np.array([src.min(0), src.max(0)])
-        b1 = np.array([npts.min(0), npts.max(0)])
+        b1 = np.array([dec.min(0), dec.max(0)])
         box_err = float(np.abs(b0 - b1).max())
         c_err = float(np.linalg.norm(b0.mean(0) - b1.mean(0)))
-        p99, pmax = surface_dev(pts, faces, npts)
+        p99, pmax = surface_dev(pts, faces, dec)
 
         name = x["path"].name
-        write_stl(out_dir / name, npts, nfaces, f"reduced from {name} - assembly coordinates kept")
+        pos_at = len(blob)
+        blob += q.tobytes()
+        blob += b"\0" * (-len(blob) % 4)
+        idx_at = len(blob)
+        blob += idx.tobytes()
+        blob += b"\0" * (-len(blob) % 4)
+        table.append({
+            "file": name,
+            "source": str(x["path"].relative_to(ROOT)),
+            "verts": len(q), "tris": len(idx), "index": 16 if idx.dtype == np.uint16 else 32,
+            "pos": pos_at, "idx": idx_at,
+            "min": mn.tolist(), "max": mx.tolist(),
+        })
         size = b0[1] - b0[0]
         rows.append((name, n0, len(nfaces), size, box_err, c_err, p99, pmax))
         if box_err > TOL_MM or c_err > TOL_MM:
@@ -219,16 +228,18 @@ def build(model):
     print(f"{'file':52s} {'tris':>9s} -> {'web':>7s}   size (mm)                     bbox±  centre±  dev99   devmax")
     for name, n0, n1, size, be, ce, p99, pm in rows:
         print(f"{name:52s} {n0:9d} -> {n1:7d}   {size[0]:7.1f} x {size[1]:7.1f} x {size[2]:7.1f}   {be:5.3f}  {ce:6.3f}  {p99:5.3f}  {pm:6.3f}")
-    clearance(model, write_manifest(model, files))
+    (OUT / f"{model['key']}.bin").write_bytes(bytes(blob))
+    print(f"   -> web/models/{model['key']}.bin  {len(blob) / 1e6:.1f} MB")
+    clearance(model, apply_manifest(model, {"bin": f"{model['key']}.bin", "parts": table}))
     return {"model": model["name"], "rows": rows, "bad": bad}
 
 
 def main():
     if "--manifest-only" in sys.argv:
         for m in MODELS:
-            files = source_files(m)
-            if files:
-                clearance(m, write_manifest(m, files))
+            path = OUT / f"{m['key']}.json"
+            if path.exists():
+                clearance(m, apply_manifest(m, json.loads(path.read_text(encoding="utf-8"))))
         return
     results = [r for r in (build(m) for m in MODELS) if r]
     bad = [f"{r['model']}: {b}" for r in results for b in r["bad"]]

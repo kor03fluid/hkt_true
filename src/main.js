@@ -71,11 +71,11 @@ function switchModel(i) {
   });
 }
 
-scene.onLoading = (name, done, total) => {
+scene.onLoading = (name, frac, label) => {
   $('loading').classList.toggle('show', !!name);
   if (!name) return;
-  $('ld-bar').style.width = `${(100 * done) / Math.max(1, total)}%`;
-  $('ld-text').textContent = `${name} 불러오는 중… ${done}/${total}`;
+  $('ld-bar').style.width = `${100 * frac}%`;
+  $('ld-text').textContent = `${name} 불러오는 중… ${label}`;
 };
 
 scene.onModel = (i, entry) => {
@@ -229,7 +229,7 @@ const found = repoModels();
 addModels(found);
 $('found').innerHTML = found.length
   ? '찾은 모델: ' + found.map((m) => `<b>${m.name}</b> (${m.parts.length} STL)`).join(', ')
-  : '저장소에서 STL을 찾지 못했습니다. <b>Turret/</b>, <b>hailo/</b> 폴더에 STL을 넣고 다시 실행하거나, 실행 후 STL 폴더를 화면에 끌어다 놓으세요.';
+  : '내장 모델이 없습니다. <b>python3 tools/build_models.py</b> 로 web/models 를 만들거나, 실행 후 STL 폴더를 화면에 끌어다 놓으세요.';
 if (found.length) switchModel(0);
 
 // ------------------------------------------------------------------ camera + tracking

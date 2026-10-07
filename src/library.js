@@ -1,11 +1,13 @@
-// Finds the STL assemblies to show.
+// Finds the assemblies to show.
 //
-// Every folder under web/models/ that holds .stl files becomes one model, and every .stl file inside
-// it becomes one part. Those files are light-weight copies of the originals in Turret/ and hailo/,
-// made by tools/build_models.py without any transform, so loading them unchanged gives the
-// assembled model in the original assembly coordinates (mm).
+// Repo models: tools/build_models.py turns the source STLs in Turret/ and hailo/ into one packed
+// model per assembly, web/models/<model>.json (part table: names, explode moves, bounding boxes)
+// + web/models/<model>.bin (16-bit vertices + indices). No transform is applied, so the parts
+// load in the original assembly coordinates (mm).
 //
-// parts.json next to the STL files can override names, colours, descriptions and explode moves:
+// Local models: any STL folder opened with the folder button or dropped on the page; one folder =
+// one model, one .stl = one part. An optional parts.json in that folder can override names,
+// colours, descriptions and explode moves:
 // {
 //   "name": "Turret", "subtitle": "...", "up": "z", "view": { "x": 0.4, "y": -0.6, "zoom": 1 },
 //   "parts": { "base.stl": { "name": "Base", "desc": "...", "color": "#f2c94c", "offset": [0, 0, -60] } }
@@ -13,15 +15,8 @@
 // "offset" is the move at full explode in model units (mm); "explode" is a direction in units of
 // the assembly radius. Parts without either move away from the assembly centre.
 
-const STL_URLS = import.meta.glob(['/web/models/**/*.stl', '/web/models/**/*.STL'], {
-  query: '?url',
-  import: 'default',
-  eager: true,
-});
-const MANIFESTS = import.meta.glob('/web/models/**/parts.json', {
-  import: 'default',
-  eager: true,
-});
+const PACKS = import.meta.glob('/web/models/*.json', { import: 'default', eager: true });
+const BINS = import.meta.glob('/web/models/*.bin', { query: '?url', import: 'default', eager: true });
 
 const WRAPPERS = new Set(['web', 'models', 'model', 'stl', 'stls', 'assets', 'cad']);
 
@@ -32,32 +27,21 @@ export const partLabel = (file) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-/** "/models/Turret/sub/base.stl" -> { model: "Turret", file: "sub/base.stl" } */
-function splitPath(path) {
-  const segs = path.split('/').filter(Boolean);
-  let dir = '';
-  while (segs.length > 2 && WRAPPERS.has(segs[0].toLowerCase())) dir += '/' + segs.shift();
-  if (segs.length === 1) return { model: 'STL', dir, file: segs[0] };
-  return { model: segs[0], dir: `${dir}/${segs[0]}`, file: segs.slice(1).join('/') };
-}
-
-function manifestFor(dir) {
-  for (const [p, m] of Object.entries(MANIFESTS)) if (p === `${dir}/parts.json`) return m;
-  return null;
-}
-
-/** Models committed to the repo: [{ name, subtitle, up, manifest, parts: [{ file, url }] }] */
+/** Models committed to the repo: [{ name, subtitle, up, manifest, binUrl, parts: [{ file, packed }] }] */
 export function repoModels() {
-  const byModel = new Map();
-  for (const [path, url] of Object.entries(STL_URLS)) {
-    const { model, dir, file } = splitPath(path);
-    if (!byModel.has(model)) byModel.set(model, { name: model, dir, parts: [] });
-    byModel.get(model).parts.push({ file, url });
-  }
   const out = [];
-  for (const m of byModel.values()) {
-    m.parts.sort((a, b) => a.file.localeCompare(b.file, undefined, { numeric: true }));
-    out.push(finish(m.name, m.parts, manifestFor(m.dir)));
+  for (const [path, doc] of Object.entries(PACKS)) {
+    const binUrl = BINS[path.slice(0, path.lastIndexOf('/') + 1) + doc.bin];
+    if (!binUrl) {
+      console.warn('missing', doc.bin, 'for', path);
+      continue;
+    }
+    const parts = Object.fromEntries(doc.parts.map((p) => [p.file, p]));
+    out.push({
+      ...finish(doc.name, [], { name: doc.name, subtitle: doc.subtitle, up: doc.up, view: doc.view, parts }),
+      binUrl,
+      parts: doc.parts.map((p) => ({ file: p.file, packed: p })),
+    });
   }
   // Turret first, then hailo Modern, hailo Legacy, everything else alphabetical
   const rank = (n) => ['turret', 'hailo modern', 'hailo legacy'].indexOf(n.toLowerCase()) + 1 || 9;

@@ -5,16 +5,40 @@
 
 모든 처리는 브라우저 안에서 합니다(MediaPipe Hand Landmarker + Three.js). 서버나 API 키가 필요 없고, 카메라 영상도 밖으로 나가지 않습니다.
 
-## 실행
+## 실행 방법 (3가지)
 
-Node.js 18+ 와 Chrome / Edge 가 필요합니다.
+### 1. 파일 하나로 바로 실행 — 설치 없음
+
+[`release/HoloHand-STL.html`](release/HoloHand-STL.html) (14 MB) 하나만 받아서 **더블클릭**하면 Chrome / Edge에서 바로 열립니다.
+코드와 세 모델이 전부 이 파일 안에 들어 있습니다.
+
+- 마우스 조작은 오프라인에서도 됩니다.
+- 손 인식은 처음 켤 때 MediaPipe 엔진과 손 모델(약 20 MB)을 인터넷(jsDelivr / unpkg, Google)에서 받습니다.
+- 다시 만들기: `npm run build:single`
+
+### 2. 웹사이트로 올리기
+
+```bash
+npm install
+npm run build        # dist/ 폴더 (37 MB, 손 인식 엔진까지 포함 → 인터넷 없이도 손 인식)
+```
+
+`dist/` 폴더를 아무 웹 서버(https)에 그대로 올리면 됩니다. 상대 경로로 빌드되어 하위 경로(`/hkt_true/` 등)에서도 동작합니다.
+
+**GitHub Pages** 로 자동 배포하려면, 저장소 **Settings → Pages → Source** 를 **GitHub Actions** 로 한 번 바꿔 두세요.
+그러면 `main` 에 push 할 때마다 `.github/workflows/pages.yml` 이 빌드해서 `https://<계정>.github.io/<저장소>/` 에 올립니다.
+(Actions 탭에서 **Run workflow** 로 직접 돌릴 수도 있습니다.) 카메라는 https 에서만 동작하는데, GitHub Pages 는 https 입니다.
+
+### 3. 개발 모드
+
+Node.js 18+ 가 필요합니다.
 
 ```bash
 npm install
 npm run dev
 ```
 
-Vite가 띄워 주는 주소(보통 http://localhost:5173)에서 **카메라 시작**을 누르세요. 카메라는 `http://localhost` 또는 `https` 에서만 동작합니다.
+Vite가 띄워 주는 주소(보통 http://localhost:5173)에서 **카메라 시작**을 누르세요.
 
 ## 모델과 좌표
 
@@ -24,10 +48,11 @@ Vite가 띄워 주는 주소(보통 http://localhost:5173)에서 **카메라 시
 | hailo Modern | `hailo/hailo/Modern_*.stl` | 11 | 약 655만 | 약 38만 |
 | hailo Legacy | `hailo/hailo/Legacy_*.stl` | 9 | 약 719만 | 약 34만 |
 
-원본 STL(약 1.1 GB)은 브라우저에서 바로 쓰기엔 너무 무거워서, `tools/build_models.py` 로 부품마다 가벼운 사본을 만들어 `web/models/` 에 둡니다(합계 55 MB).
+원본 STL(약 1.1 GB)은 브라우저에서 바로 쓰기엔 너무 무거워서, `tools/build_models.py` 로 폴리곤을 줄이고 모델마다 파일 하나로 묶어
+`web/models/<모델>.bin` + `.json` 으로 둡니다(세 모델 합계 10 MB). 꼭짓점은 부품 바운딩 박스 안의 16비트 정수로 저장해서, 저장 오차가 0.003 mm 이하입니다.
 
 - **좌표 변환 없음.** 꼭짓점은 원본 어셈블리 좌표(mm, Z 위)에 그대로 남습니다. 뷰어는 어셈블리 전체를 한 번만 화면 가운데로 옮기므로, 부품 사이의 상대 위치는 원본과 같습니다.
-- **스크립트가 직접 검증합니다.** 부품마다 원본과 비교해 바운딩 박스 · 중심이 0.5 mm 넘게 어긋나면 실패로 멈춥니다. 현재 최대 오차는 0.12 mm(L-01 다리), 표면 편차 99%값은 0.31 mm 이하입니다.
+- **스크립트가 직접 검증합니다.** 뷰어가 실제로 그리는 값(16비트에서 복원한 꼭짓점)을 원본과 비교해, 바운딩 박스 · 중심이 0.5 mm 넘게 어긋나면 실패로 멈춥니다. 현재 최대 오차는 0.12 mm(L-01 다리), 표면 편차 99%값은 0.31 mm 이하입니다.
 - **원본은 그대로 둡니다.** `Turret/`, `hailo/` 원본 파일은 수정하지 않고, 앱 번들에도 들어가지 않습니다.
 - **hailo는 두 모델로 나눕니다.** 폴더 안에 Legacy(x ≈ -200)와 Modern(x ≈ +200) 두 조립체가 나란히 있어서 따로 보여 줍니다.
 
@@ -35,7 +60,8 @@ Vite가 띄워 주는 주소(보통 http://localhost:5173)에서 **카메라 시
 
 ```bash
 pip install -r tools/requirements.txt
-python3 tools/build_models.py          # 경량 STL + parts.json 다시 만들기 (2~3분)
+python3 tools/build_models.py          # web/models 다시 만들기 (2~3분)
+npm run build:single                   # 한 파일 버전도 다시 만들기
 ```
 
 ### 분해 방향 바꾸기
@@ -73,15 +99,18 @@ python3 tools/build_models.py --manifest-only
 
 ```
 Turret/, hailo/          원본 STL (수정하지 않음)
-web/models/<모델>/       뷰어용 경량 STL + parts.json (tools/build_models.py 가 생성)
-tools/build_models.py    폴리곤 축소 · 좌표 검증 · parts.json 생성
+release/HoloHand-STL.html  더블클릭으로 실행하는 한 파일 버전 (npm run build:single 이 생성)
+web/models/<모델>.bin/.json  뷰어용 경량 모델 (tools/build_models.py 가 생성)
+.github/workflows/pages.yml  GitHub Pages 자동 배포
+tools/build_models.py    폴리곤 축소 · 16비트 패킹 · 좌표 검증
 tools/explode.json       부품별 분해 이동량 (mm)
 src/main.js              앱 루프, 손 오버레이, 제스처 → 동작, 이름표, UI
 src/scene.js             Three.js STL 렌더러: 분해, 부품 이동/회전, 선택(BVH 레이캐스트), X-ray, 단독 보기
-src/library.js           web/models 자동 탐색, parts.json, 폴더 열기 / 드래그 앤 드롭
+src/library.js           web/models 자동 탐색, 폴더 열기 / 드래그 앤 드롭 (STL + parts.json)
 src/handTracking.js      MediaPipe 래퍼 (HoloHand 그대로)
 src/gestureEngine.js     랜드마크 → 제스처 · 손 펴짐 · 손목 회전 (HoloHand 그대로)
 scripts/setup.mjs        npm install 시 MediaPipe WASM 복사 + 손 모델 다운로드 (실패하면 실행 시 CDN 사용)
+scripts/finish-single.mjs  한 파일 빌드 마무리 (release/HoloHand-STL.html)
 ```
 
 HoloHand 원본 라이선스는 `LICENSE-HoloHand` 에 있습니다.

@@ -17,6 +17,21 @@ const EDGE_TRI_LIMIT = 150000; // skip feature edges on very dense parts
 const DEFAULT_VIEW = { x: 0.38, y: -0.62, z: 0, zoom: 1 };
 const UP_ROT = { z: [-Math.PI / 2, 0, 0], y: [0, 0, 0], x: [0, 0, Math.PI / 2] };
 
+/** Packed part (see tools/build_models.py) -> indexed geometry in the original assembly coordinates. */
+function unpack(bin, p) {
+  const q = new Uint16Array(bin, p.pos, p.verts * 3);
+  const pos = new Float32Array(p.verts * 3);
+  for (let a = 0; a < 3; a++) {
+    const mn = p.min[a], step = (p.max[a] - p.min[a]) / 65535;
+    for (let k = a; k < pos.length; k += 3) pos[k] = mn + q[k] * step;
+  }
+  const idx = p.index === 16 ? new Uint16Array(bin, p.idx, p.tris * 3) : new Uint32Array(bin, p.idx, p.tris * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  return geo;
+}
+
 const partColor = (i) => '#' + new THREE.Color().setHSL((0.09 + i * 0.618034) % 1, 0.6, 0.62).getHexString();
 
 export class StlScene {
@@ -65,7 +80,7 @@ export class StlScene {
     this.shift = 0;
 
     this.onModel = null; // (index, entry)
-    this.onLoading = null; // (name, done, total) | null when finished
+    this.onLoading = null; // (name, fraction 0..1, label) | null when finished
 
     this.resize();
     addEventListener('resize', () => this.resize());
@@ -100,26 +115,31 @@ export class StlScene {
     const man = def.manifest?.parts || {};
     const raw = [];
     const failed = [];
+    const bin = def.binUrl ? await this._fetchBin(def) : null;
     for (let k = 0; k < def.parts.length; k++) {
       const src = def.parts[k];
-      this.onLoading?.(def.name, k, def.parts.length);
       try {
-        let buf;
-        if (src.blob) buf = await src.blob.arrayBuffer();
+        let geo;
+        if (src.packed) geo = unpack(bin, src.packed);
         else {
-          const r = await fetch(src.url);
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          buf = await r.arrayBuffer();
+          this.onLoading?.(def.name, k / def.parts.length, `${k}/${def.parts.length}`);
+          let buf;
+          if (src.blob) buf = await src.blob.arrayBuffer();
+          else {
+            const r = await fetch(src.url);
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            buf = await r.arrayBuffer();
+          }
+          geo = loader.parse(buf);
+          await new Promise((r) => setTimeout(r)); // keep the page responsive on big assemblies
         }
-        const geo = loader.parse(buf);
-        if (!geo.attributes.position?.count) throw new Error('empty STL');
+        if (!geo.attributes.position?.count) throw new Error('empty mesh');
         geo.computeBoundingBox();
         raw.push({ src, geo, info: man[src.file] || man[src.file.split('/').pop()] || {} });
       } catch (e) {
-        console.warn('STL load failed:', src.file, e);
+        console.warn('part load failed:', src.file, e);
         failed.push(src.file);
       }
-      await new Promise((r) => setTimeout(r)); // keep the page responsive on big assemblies
     }
     this.onLoading?.(null);
     if (!raw.length) throw new Error(`${def.name}: STL을 하나도 읽지 못했습니다`);
@@ -159,6 +179,7 @@ export class StlScene {
         roughness: 0.46,
         emissive: color,
         emissiveIntensity: 0.05,
+        flatShading: true, // CAD look: one normal per facet, for STL and packed meshes alike
         side: THREE.DoubleSide,
         polygonOffset: true,
         polygonOffsetFactor: 1,
@@ -168,7 +189,7 @@ export class StlScene {
       mesh.userData.i = idx;
       const pivot = new THREE.Group();
       pivot.add(mesh);
-      const tris = geo.attributes.position.count / 3;
+      const tris = (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
       let edges = null;
       if (tris <= EDGE_TRI_LIMIT) {
         edges = new THREE.LineSegments(
@@ -202,6 +223,30 @@ export class StlScene {
       };
     });
     return { def, asm, parts, fit: FIT / maxR, failed };
+  }
+
+  /** Downloads a packed model (.bin) with a progress bar. */
+  async _fetchBin(def) {
+    this.onLoading?.(def.name, 0, '');
+    const r = await fetch(def.binUrl);
+    if (!r.ok) throw new Error(`${def.name}: HTTP ${r.status}`);
+    // content-length is the transfer size; with gzip the body is larger, so it only drives the bar
+    const total = +r.headers.get('content-length') || 0;
+    if (!r.body || !total) return r.arrayBuffer();
+    const reader = r.body.getReader();
+    const chunks = [];
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      got += value.length;
+      this.onLoading?.(def.name, Math.min(1, got / total), `${(got / 1e6).toFixed(1)} MB`);
+    }
+    const out = new Uint8Array(got);
+    let at = 0;
+    for (const c of chunks) out.set(c, at), (at += c.length);
+    return out.buffer;
   }
 
   /** Loads (once) and returns the built model. */

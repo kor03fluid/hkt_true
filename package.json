@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite --open",
     "build": "vite build",
+    "build:single": "vite build --mode single && node scripts/finish-single.mjs",
     "preview": "vite preview",
     "postinstall": "node scripts/setup.mjs"
   },
@@ -16,6 +17,7 @@
     "three-mesh-bvh": "^0.9.1"
   },
   "devDependencies": {
-    "vite": "^5.4.0"
+    "vite": "^5.4.0",
+    "vite-plugin-singlefile": "^2.3.3"
   }
 }
