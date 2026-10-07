@@ -1,0 +1,238 @@
+{
+ "bin": "hailo-Legacy.bin",
+ "parts": [
+  {
+   "file": "Legacy_Helmet_DH-02.stl",
+   "source": "hailo/hailo/Legacy_Helmet_DH-02.stl",
+   "verts": 25871,
+   "tris": 51786,
+   "index": 16,
+   "pos": 0,
+   "idx": 155228,
+   "min": [
+    -335.0801575817978,
+    -117.17473012733491,
+    -0.007361203236649525
+   ],
+   "max": [
+    -64.91163899649627,
+    117.16722791088733,
+    129.99985913017358
+   ],
+   "name": "DH-02 Helmet",
+   "offset": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "file": "Legacy_Left_Adapter_Band_HP-03B-L.stl",
+   "source": "hailo/hailo/Legacy_Left_Adapter_Band_HP-03B-L.stl",
+   "verts": 23222,
+   "tris": 46456,
+   "index": 16,
+   "pos": 465944,
+   "idx": 605276,
+   "min": [
+    -258.000032309378,
+    91.76168410816727,
+    28.809570880393604
+   ],
+   "max": [
+    -153.9741225460954,
+    118.65238189697266,
+    80.58915788406317
+   ],
+   "name": "HP-03B-L Left Adapter Band",
+   "offset": [
+    0,
+    30,
+    0
+   ]
+  },
+  {
+   "file": "Legacy_Left_Paddle_HP-04.stl",
+   "source": "hailo/hailo/Legacy_Left_Paddle_HP-04.stl",
+   "verts": 6883,
+   "tris": 13766,
+   "index": 16,
+   "pos": 884012,
+   "idx": 925312,
+   "min": [
+    -174.00000434050978,
+    127.56974856737267,
+    84.84239105506171
+   ],
+   "max": [
+    -148.5005480051848,
+    139.38096831981576,
+    104.73258557747438
+   ],
+   "name": "HP-04 Left Paddle",
+   "offset": [
+    0,
+    150,
+    15
+   ]
+  },
+  {
+   "file": "Legacy_Left_Pod_Housing_HP-01L.stl",
+   "source": "hailo/hailo/Legacy_Left_Pod_Housing_HP-01L.stl",
+   "verts": 17672,
+   "tris": 35424,
+   "index": 16,
+   "pos": 1007908,
+   "idx": 1113940,
+   "min": [
+    -254.08641377298596,
+    104.75516484173215,
+    54.53038114964624
+   ],
+   "max": [
+    -145.91180419857665,
+    141.8001251220703,
+    116.88903957351467
+   ],
+   "name": "HP-01L Left Pod Housing",
+   "offset": [
+    0,
+    110,
+    0
+   ]
+  },
+  {
+   "file": "Legacy_Left_Pod_RearCover_HP-02L.stl",
+   "source": "hailo/hailo/Legacy_Left_Pod_RearCover_HP-02L.stl",
+   "verts": 17326,
+   "tris": 34664,
+   "index": 16,
+   "pos": 1326484,
+   "idx": 1430440,
+   "min": [
+    -254.03773425802638,
+    97.44931962342218,
+    52.240995227485676
+   ],
+   "max": [
+    -145.9606712328821,
+    122.51230136620346,
+    110.1882300945708
+   ],
+   "name": "HP-02L Left Pod RearCover",
+   "offset": [
+    0,
+    70,
+    0
+   ]
+  },
+  {
+   "file": "Legacy_Rear_Cable_Cover_HP-05.stl",
+   "source": "hailo/hailo/Legacy_Rear_Cable_Cover_HP-05.stl",
+   "verts": 21756,
+   "tris": 43524,
+   "index": 16,
+   "pos": 1638424,
+   "idx": 1768960,
+   "min": [
+    -314.13984497344165,
+    -117.82321166992188,
+    79.32680234169658
+   ],
+   "max": [
+    -252.9196319580078,
+    117.81665640883142,
+    103.3288773523017
+   ],
+   "name": "HP-05 Rear Cable Cover",
+   "offset": [
+    -90,
+    0,
+    30
+   ]
+  },
+  {
+   "file": "Legacy_Right_Adapter_Band_HP-03B-R.stl",
+   "source": "hailo/hailo/Legacy_Right_Adapter_Band_HP-03B-R.stl",
+   "verts": 23222,
+   "tris": 46456,
+   "index": 16,
+   "pos": 2030104,
+   "idx": 2169436,
+   "min": [
+    -258.00003349546995,
+    -118.6523867884195,
+    28.773085149734005
+   ],
+   "max": [
+    -153.97436179942176,
+    -91.75491899905819,
+    80.59288568008878
+   ],
+   "name": "HP-03B-R Right Adapter Band",
+   "offset": [
+    0,
+    -30,
+    0
+   ]
+  },
+  {
+   "file": "Legacy_Right_Pod_Housing_HP-01R.stl",
+   "source": "hailo/hailo/Legacy_Right_Pod_Housing_HP-01R.stl",
+   "verts": 17068,
+   "tris": 34168,
+   "index": 16,
+   "pos": 2448172,
+   "idx": 2550580,
+   "min": [
+    -254.08776390856812,
+    -141.80049287893726,
+    54.537025451660156
+   ],
+   "max": [
+    -145.90992236281238,
+    -104.75839309507836,
+    116.88834926692925
+   ],
+   "name": "HP-01R Right Pod Housing",
+   "offset": [
+    0,
+    -110,
+    0
+   ]
+  },
+  {
+   "file": "Legacy_Right_Pod_RearCover_HP-02R.stl",
+   "source": "hailo/hailo/Legacy_Right_Pod_RearCover_HP-02R.stl",
+   "verts": 16867,
+   "tris": 33746,
+   "index": 16,
+   "pos": 2755588,
+   "idx": 2856792,
+   "min": [
+    -254.0392004297997,
+    -122.5123017729259,
+    52.24140930175781
+   ],
+   "max": [
+    -145.9606712328821,
+    -97.4499965123548,
+    110.19178049408683
+   ],
+   "name": "HP-02R Right Pod RearCover",
+   "offset": [
+    0,
+    -70,
+    0
+   ]
+  }
+ ],
+ "name": "hailo Legacy",
+ "subtitle": "hailo/ 원본 STL 9개 · 좌표 그대로",
+ "up": "z",
+ "view": {
+  "x": 0.42,
+  "y": -1.2,
+  "zoom": 0.8
+ }
+}

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HoloHand STL Viewer</title>
+</head>
+<body>
+  <video id="video" playsinline muted></video>
+  <div class="shade"></div>
+  <canvas id="scene"></canvas>
+  <canvas id="fx"></canvas>
+
+  <aside id="panel">
+    <div class="brand">
+      <div class="logo"></div>
+      <div><b>HoloHand STL</b><span>손으로 분해하고 들여다보기</span></div>
+    </div>
+
+    <section class="model">
+      <div class="tags"><span class="tag" id="m-cat">어셈블리</span><span class="tag ghost" id="m-count">0 부품</span></div>
+      <h2 id="m-name">모델 없음</h2>
+      <p id="m-sub"></p>
+    </section>
+
+    <section class="stat">
+      <div><label>손 인식</label><b id="s-track">꺼짐</b></div>
+      <div><label>인식된 손</label><b id="s-hands">0</b></div>
+    </section>
+
+    <section class="sliders">
+      <div class="slider"><label>분해 <b id="v-explode">0%</b></label><input id="r-explode" type="range" min="0" max="100" value="0" /></div>
+      <div class="slider"><label>분해 거리 <b id="v-int">100%</b></label><input id="r-int" type="range" min="30" max="250" value="100" /></div>
+    </section>
+
+    <section class="gest">
+      <h4>제스처</h4>
+      <ul id="gest">
+        <li data-g="OPEN"><i>✋</i><p><b>손 천천히 펴기</b><span>분해해서 안쪽 보기</span></p></li>
+        <li data-g="FIST"><i>✊</i><p><b>주먹 쥐기</b><span>조립 · 꽉 쥐고 있으면 부품 원위치</span></p></li>
+        <li data-g="MOVE"><i>👋</i><p><b>손 이동 · 비틀기</b><span>모델 회전 · 기울이기</span></p></li>
+        <li data-g="POINT"><i>☝️</i><p><b>검지로 가리키기</b><span>부품 강조 · 멈추면 선택</span></p></li>
+        <li data-g="PINCH"><i>🤏</i><p><b>부품 집기</b><span>끌어서 이동 · 손목 비틀어 부품 회전</span></p></li>
+        <li data-g="TWO"><i>🙌</i><p><b>양손</b><span>벌리면 확대 · 모으면 축소</span></p></li>
+        <li data-g="PEACE"><i>✌️</i><p><b>브이</b><span>다음 모델</span></p></li>
+      </ul>
+    </section>
+
+    <section class="partcard" id="partcard">
+      <div class="pc-name"><i id="pc-dot"></i><b id="pc-name">선택된 부품 없음</b></div>
+      <p id="pc-desc">부품을 가리키거나 클릭하세요.</p>
+      <div class="pc-btns" id="pc-btns">
+        <button id="pc-hide">숨기기</button>
+        <button id="pc-iso">이 부품만</button>
+        <button id="pc-home">원위치</button>
+      </div>
+    </section>
+
+    <section class="plist">
+      <h4>부품 목록 <button id="pl-all" class="link">모두 보이기</button></h4>
+      <ul id="plist"></ul>
+    </section>
+
+    <section class="btns">
+      <button id="b-explode">분해</button>
+      <button id="b-handx" class="on" title="손을 펴고 쥐는 정도로 분해/조립">손으로 분해</button>
+      <button id="b-xray">X-ray</button>
+      <button id="b-spin">자동 회전</button>
+      <button id="b-parts">부품 원위치</button>
+      <button id="b-reset">시점 초기화</button>
+    </section>
+  </aside>
+
+  <div id="toolbar">
+    <button id="t-feed" class="on" title="카메라 배경"><svg viewBox="0 0 24 24"><path d="M3 7h3l2-2h8l2 2h3v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg></button>
+    <button id="t-skel" class="on" title="손 뼈대"><svg viewBox="0 0 24 24"><path d="M7 21v-8M11 21V5M15 21V8M19 21v-7M7 13l-3-2"/></svg></button>
+    <button id="t-labels" class="on" title="부품 이름표"><svg viewBox="0 0 24 24"><path d="M4 7h10M4 12h16M4 17h10"/><circle cx="18" cy="7" r="1.6"/></svg></button>
+    <button id="t-edges" class="on" title="모서리 선"><svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg></button>
+    <button id="t-full" title="전체 화면"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+  </div>
+
+  <nav id="chips">
+    <div class="grp" id="chip-models"><span class="gl">모델</span></div>
+    <div class="grp"><button id="b-open" title="STL 파일이 든 폴더 열기">📂 폴더 열기</button></div>
+    <input id="f-dir" type="file" webkitdirectory multiple hidden />
+  </nav>
+  <div id="toast"></div>
+  <div id="banner"></div>
+  <div id="loading"><div class="bar"><i id="ld-bar"></i></div><span id="ld-text"></span></div>
+  <div id="drop"><div>STL 파일이나 폴더를 여기에 놓으세요</div></div>
+
+  <div id="start">
+    <div class="card">
+      <div class="logo big"></div>
+      <h1>HoloHand STL</h1>
+      <p>웹캠으로 손을 인식해 STL 어셈블리를 분해하고, 돌리고, 확대하고, 부품을 하나씩 꺼내 볼 수 있어요. 카메라 영상은 브라우저 밖으로 나가지 않습니다.</p>
+      <div id="found"></div>
+      <button id="btn-cam" class="primary">카메라 시작</button>
+      <button id="btn-mouse" class="ghost">마우스로 보기</button>
+      <small>마우스: 드래그 회전 · 휠 확대 · 클릭 선택 · Shift+드래그 부품 이동 · Alt+드래그 부품 회전<br />키: Space 분해 · ←→ 모델 · R 시점 · P 부품 원위치 · X X-ray · I 선택 부품만 · H 숨기기</small>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

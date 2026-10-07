@@ -1,0 +1,23 @@
+{
+  "name": "holohand-stl",
+  "private": true,
+  "version": "1.0.0",
+  "description": "웹캠 손 인식으로 STL 어셈블리(Turret, hailo)를 분해·회전·확대하고 부품을 조작하는 뷰어 (HoloHand 기반)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --open",
+    "build": "vite build",
+    "build:single": "vite build --mode single && node scripts/finish-single.mjs",
+    "preview": "vite preview",
+    "postinstall": "node scripts/setup.mjs"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "0.10.14",
+    "three": "^0.170.0",
+    "three-mesh-bvh": "^0.9.1"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0",
+    "vite-plugin-singlefile": "^2.3.3"
+  }
+}

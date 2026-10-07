@@ -1,0 +1,288 @@
+{
+ "bin": "hailo-Modern.bin",
+ "parts": [
+  {
+   "file": "Modern_Helmet_DH-01.stl",
+   "source": "hailo/hailo/Modern_Helmet_DH-01.stl",
+   "verts": 25430,
+   "tris": 50856,
+   "index": 16,
+   "pos": 0,
+   "idx": 152580,
+   "min": [
+    74.99909321128276,
+    -110.35079193115237,
+    -0.02302355950855732
+   ],
+   "max": [
+    325.0023022592686,
+    110.35067749023439,
+    120.00091769210026
+   ],
+   "name": "DH-01 Helmet",
+   "offset": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "file": "Modern_Left_Adapter_JawInsert_HP-03A-I-L.stl",
+   "source": "hailo/hailo/Modern_Left_Adapter_JawInsert_HP-03A-I-L.stl",
+   "verts": 11183,
+   "tris": 22362,
+   "index": 16,
+   "pos": 457716,
+   "idx": 524816,
+   "min": [
+    152.00003051757812,
+    105.85071164776609,
+    12.499990463256827
+   ],
+   "max": [
+    238.00134277343764,
+    110.15093574518254,
+    25.599941253662113
+   ],
+   "name": "HP-03A-I-L Left Adapter JawInsert",
+   "offset": [
+    0,
+    25,
+    0
+   ]
+  },
+  {
+   "file": "Modern_Left_Adapter_Rail_HP-03A-L.stl",
+   "source": "hailo/hailo/Modern_Left_Adapter_Rail_HP-03A-L.stl",
+   "verts": 17277,
+   "tris": 34566,
+   "index": 16,
+   "pos": 658988,
+   "idx": 762652,
+   "min": [
+    147.99999999999994,
+    105.85079193115233,
+    12.000001907348633
+   ],
+   "max": [
+    239.99964904785168,
+    119.05080414480038,
+    49.00003433227539
+   ],
+   "name": "HP-03A-L Left Adapter Rail",
+   "offset": [
+    0,
+    50,
+    0
+   ]
+  },
+  {
+   "file": "Modern_Left_Paddle_HP-04.stl",
+   "source": "hailo/hailo/Modern_Left_Paddle_HP-04.stl",
+   "verts": 7535,
+   "tris": 15070,
+   "index": 16,
+   "pos": 970048,
+   "idx": 1015260,
+   "min": [
+    225.99999999999991,
+    142.95141601562497,
+    44.300003051757805
+   ],
+   "max": [
+    251.4994506835938,
+    151.25080871582037,
+    64.30005645751956
+   ],
+   "name": "HP-04 Left Paddle",
+   "offset": [
+    0,
+    160,
+    15
+   ]
+  },
+  {
+   "file": "Modern_Left_Pod_Housing_HP-01L.stl",
+   "source": "hailo/hailo/Modern_Left_Pod_Housing_HP-01L.stl",
+   "verts": 19350,
+   "tris": 38780,
+   "index": 16,
+   "pos": 1105680,
+   "idx": 1221780,
+   "min": [
+    145.91227000141325,
+    123.84984877849136,
+    18.999999999999996
+   ],
+   "max": [
+    254.08931885343512,
+    146.85132233771617,
+    79.50066009262976
+   ],
+   "name": "HP-01L Left Pod Housing",
+   "offset": [
+    0,
+    120,
+    0
+   ]
+  },
+  {
+   "file": "Modern_Left_Pod_RearCover_HP-02L.stl",
+   "source": "hailo/hailo/Modern_Left_Pod_RearCover_HP-02L.stl",
+   "verts": 18968,
+   "tris": 37948,
+   "index": 16,
+   "pos": 1454460,
+   "idx": 1568268,
+   "min": [
+    145.96205139160145,
+    116.35059024721001,
+    18.999998092651364
+   ],
+   "max": [
+    254.03812824446354,
+    133.41525345465845,
+    78.11786656157255
+   ],
+   "name": "HP-02L Left Pod RearCover",
+   "offset": [
+    0,
+    85,
+    0
+   ]
+  },
+  {
+   "file": "Modern_Rear_Cable_Cover_HP-05.stl",
+   "source": "hailo/hailo/Modern_Rear_Cable_Cover_HP-05.stl",
+   "verts": 24551,
+   "tris": 49134,
+   "index": 16,
+   "pos": 1795956,
+   "idx": 1943264,
+   "min": [
+    75.67206635544008,
+    -131.85161477424617,
+    44.99865557547516
+   ],
+   "max": [
+    145.699857135521,
+    131.86162628148776,
+    69.00235168479733
+   ],
+   "name": "HP-05 Rear Cable Cover",
+   "offset": [
+    -90,
+    0,
+    30
+   ]
+  },
+  {
+   "file": "Modern_Right_Adapter_JawInsert_HP-03A-I-R.stl",
+   "source": "hailo/hailo/Modern_Right_Adapter_JawInsert_HP-03A-I-R.stl",
+   "verts": 11183,
+   "tris": 22362,
+   "index": 16,
+   "pos": 2238068,
+   "idx": 2305168,
+   "min": [
+    152.00003051757807,
+    -110.15090661062558,
+    12.499990463256827
+   ],
+   "max": [
+    238.00134277343759,
+    -105.85075323447465,
+    25.59994125366212
+   ],
+   "name": "HP-03A-I-R Right Adapter JawInsert",
+   "offset": [
+    0,
+    -25,
+    0
+   ]
+  },
+  {
+   "file": "Modern_Right_Adapter_Rail_HP-03A-R.stl",
+   "source": "hailo/hailo/Modern_Right_Adapter_Rail_HP-03A-R.stl",
+   "verts": 17277,
+   "tris": 34566,
+   "index": 16,
+   "pos": 2439340,
+   "idx": 2543004,
+   "min": [
+    147.9999999999998,
+    -119.05081833985608,
+    12.000001907348633
+   ],
+   "max": [
+    239.99964904785162,
+    -105.85079193115233,
+    49.00003433227539
+   ],
+   "name": "HP-03A-R Right Adapter Rail",
+   "offset": [
+    0,
+    -50,
+    0
+   ]
+  },
+  {
+   "file": "Modern_Right_Pod_Housing_HP-01R.stl",
+   "source": "hailo/hailo/Modern_Right_Pod_Housing_HP-01R.stl",
+   "verts": 18686,
+   "tris": 37404,
+   "index": 16,
+   "pos": 2750400,
+   "idx": 2862516,
+   "min": [
+    145.912267907169,
+    -146.85081481933594,
+    18.999999999999993
+   ],
+   "max": [
+    254.08819580078125,
+    -123.85015834708025,
+    79.49980531354922
+   ],
+   "name": "HP-01R Right Pod Housing",
+   "offset": [
+    0,
+    -120,
+    0
+   ]
+  },
+  {
+   "file": "Modern_Right_Pod_RearCover_HP-02R.stl",
+   "source": "hailo/hailo/Modern_Right_Pod_RearCover_HP-02R.stl",
+   "verts": 18465,
+   "tris": 36942,
+   "index": 16,
+   "pos": 3086940,
+   "idx": 3197732,
+   "min": [
+    145.96205139160145,
+    -126.15078735351567,
+    18.999998092651367
+   ],
+   "max": [
+    254.03819274902338,
+    -116.35027690949659,
+    78.11753624943664
+   ],
+   "name": "HP-02R Right Pod RearCover",
+   "offset": [
+    0,
+    -85,
+    0
+   ]
+  }
+ ],
+ "name": "hailo Modern",
+ "subtitle": "hailo/ 원본 STL 11개 · 좌표 그대로",
+ "up": "z",
+ "view": {
+  "x": 0.42,
+  "y": -1.2,
+  "zoom": 0.8
+ }
+}
