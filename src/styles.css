@@ -191,3 +191,14 @@ body.holo .btns button, body.holo #chips button { background: rgba(95, 228, 255,
 body.holo .btns button:hover, body.holo #chips button:hover { background: rgba(95, 228, 255, 0.14); }
 body.holo #plist li.sel, body.holo #gest li.active { background: rgba(255, 181, 71, 0.12); border-color: rgba(255, 181, 71, 0.5); }
 body.holo #plist li.sel span { color: #ffe2b0; }
+
+/* ------------------------------------------------ part descriptions */
+.model p.about { margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: rgba(95, 228, 255, 0.06); border-left: 2px solid var(--accent); color: #c9eef8; font-size: 11.5px; line-height: 1.5; }
+.model p.about:empty { display: none; }
+.pc-group { display: inline-block; margin-bottom: 6px; font: 600 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.5px; color: var(--accent); background: rgba(95, 228, 255, 0.1); padding: 2px 7px; border-radius: 999px; }
+.pc-group:empty { display: none; }
+.partcard .pc-alt { margin-top: 2px; color: var(--muted); font-size: 11.5px; }
+.partcard .pc-alt:empty, .partcard .pc-meta:empty { display: none; }
+.partcard .pc-meta { margin-top: 7px; color: var(--muted); font: 10.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-line; }
+#plist li.grp { cursor: default; padding: 8px 6px 3px; font: 600 10.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.4px; color: var(--accent); border: 0; }
+#plist li.grp:hover { background: none; }

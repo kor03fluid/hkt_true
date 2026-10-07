@@ -1,0 +1,69 @@
+{
+  "_comment": "Part names, groups and descriptions shown in the viewer. Keyed by the part code in the STL file name (B-01, HP-03A-I-L, ...). Apply with: python3 tools/build_models.py --manifest-only",
+  "Turret": {
+    "about": "B 계열 = 베이스, Y 계열 = 회전축, H 계열 = 센서·시연 장치, L 계열 = 지지구조. 최종 구조는 이 구분에 맞춘 17종으로 구성된다.",
+    "groups": [
+      { "id": "B", "name": "B 계열 · 베이스" },
+      { "id": "Y", "name": "Y 계열 · 회전축" },
+      { "id": "H", "name": "H 계열 · 센서·시연 장치" },
+      { "id": "L", "name": "L 계열 · 지지구조" }
+    ],
+    "parts": {
+      "B-01": { "group": "B", "name": "Base Housing", "desc": "터렛 하부 전자부와 전원 계통을 수용하는 메인 베이스 하우징. 내부 부품을 보호하면서 상부 회전 구조 전체를 지지하는 터렛의 기본 골격이다." },
+      "B-02": { "group": "B", "name": "Middle Deck", "desc": "베이스 내부 공간을 상·하부로 구분하고 전자부품과 배선을 정리하는 내부 데크. 상부 회전기구와 하부 제어부 사이의 구조적 지지면 역할도 한다." },
+      "B-03": { "group": "B", "name": "Base Top Plate", "desc": "베이스 하우징 상단을 마감하면서 Yaw 회전부가 설치되는 상부 플랫폼. 베이스와 턴테이블 구조를 연결하는 기준면이다." },
+      "B-04": { "group": "B", "name": "Bearing Tower", "desc": "회전축과 베어링을 안정적으로 지지하는 원통형 구조물. Yaw 회전 시 축의 흔들림을 줄이고 상부 터렛 하중을 베이스로 전달한다." },
+      "B-05": { "group": "B", "name": "Pan Hub", "desc": "Pan 회전축과 구동부를 연결하는 중앙 허브. 서보의 회전력을 터렛 상부 구조에 전달해 좌우 방향 회전을 구현한다." },
+      "Y-01": { "group": "Y", "name": "Turntable", "desc": "터렛 상부 전체가 좌우로 회전하는 원형 회전 플랫폼. 베이스의 Pan 구동부와 상부 Yoke 구조 사이를 연결한다." },
+      "Y-02": { "group": "Y", "name": "Left Yoke", "desc": "Tilt 축의 한쪽을 지지하는 좌측 요크. 베어링 측 회전축을 지지해 카메라 프레임이 안정적으로 상하 회전할 수 있도록 한다." },
+      "Y-03": { "group": "Y", "name": "Right Yoke", "desc": "Tilt 구동 서보가 결합되는 우측 요크. 서보의 회전력을 Tilt Frame에 전달해 카메라와 상부 장치의 상하 각도를 제어한다." },
+      "H-01v4": { "group": "H", "name": "Tilt Frame", "desc": "카메라 데크와 상부 시연 모듈을 하나의 Tilt 축에 결합하는 핵심 프레임. 좌·우 Yoke 사이에서 회전하며 터렛의 상하 추적 동작을 담당한다." },
+      "H-08": { "group": "H", "name": "Webcam Deck", "desc": "비전 카메라를 Tilt Frame 위에 고정하는 전용 장착 플랫폼. 중앙 카메라 체결부와 주변 고정부를 통해 카메라의 위치와 시야 방향을 일정하게 유지한다." },
+      "H-10": { "group": "H", "name": "LED Demo Mount", "desc": "가시광 LED 8개를 일렬로 배치하는 시연용 경고등 마운트. 카메라 추적 및 경보 상태를 관람자가 즉시 확인할 수 있도록 시각적 피드백을 제공한다." },
+      "H-09": { "group": "H", "name": "Safe Net Demo Module", "desc": "피스톤·래치·카트리지 등 내부 기구의 결합과 작동 개념을 보여주기 위한 안전 시연 모듈. 실제 운용 성능보다는 구조 원리와 기계적 연동을 시각적으로 설명하는 데 목적이 있다." },
+      "H-03": { "group": "H", "name": "Piston", "desc": "H-09 내부에서 직선 방향으로 이동하는 가동 부품. 내부 기구가 어떻게 운동을 전달하는지 보여주는 시연용 핵심 이동체다." },
+      "H-04": { "group": "H", "name": "Latch Lever", "desc": "피스톤을 지정 위치에 유지하거나 해제하는 래치 구조의 레버. 서보 동작과 기계식 잠금 구조의 연동 원리를 보여준다." },
+      "H-05": { "group": "H", "name": "Net Cartridge", "desc": "시연용 메시·코드 구조를 수납하는 교체형 카트리지. H-09 모듈 내부에 삽입되어 내부 구조와 분리 가능한 모듈식 설계를 보여준다." },
+      "H-06": { "group": "H", "name": "Weight Test Piece", "desc": "코너 부품의 형상과 결합 상태를 확인하기 위한 시험용 모델. 실제 운용 성능이 아니라 조립성·수납성·간섭 여부를 확인하는 데 사용된다." },
+      "L-01": { "group": "L", "name": "Leg", "desc": "베이스 하부를 지면에서 지지하는 3개의 다리 구조. 터렛의 설치 면적을 넓혀 전체 시스템의 자세를 안정적으로 유지한다." }
+    }
+  },
+  "hailo-Modern": {
+    "about": "HaloPod v3.2. 핵심은 Left = 능동 전자부 / Right = 수동 LED부라는 비대칭 구조다. 좌측에는 ESP32-C3·전원·입력·경보 장치가 집중되고, 우측은 LED만 배치된다. 좌우는 HP-05 후면 케이블 커버를 통해 연결된다.",
+    "groups": [
+      { "id": "pod", "name": "공통 Pod 구성" },
+      { "id": "modern", "name": "Modern Helmet 전용" }
+    ],
+    "parts": {
+      "HP-01L": { "group": "pod", "name": "Left Pod Housing", "desc": "HaloPod의 주 전자장치를 수용하는 좌측 메인 하우징. ESP32-C3, 전원부, 버튼 입력, 부저, 진동모터와 좌측 LED 8개가 집중되는 능동형 Pod다." },
+      "HP-02L": { "group": "pod", "name": "Left Pod Rear Cover", "desc": "Left Pod 내부 전자부를 보호하고 헬멧 및 어댑터와 맞닿는 후면 커버. 내부 배선과 전자부품을 외부 충격으로부터 분리한다." },
+      "HP-01R": { "group": "pod", "name": "Right Pod Housing", "desc": "우측 LED 8개를 수용하는 수동형 Pod 하우징. 별도의 제어보드나 배터리 없이 Left Pod에서 전달된 전원과 LED 제어 신호를 사용한다." },
+      "HP-02R": { "group": "pod", "name": "Right Pod Rear Cover", "desc": "Right Pod를 닫고 헬멧 측 결합면을 형성하는 후면 커버. LED 배선과 내부 공간을 보호하면서 좌우 Pod의 외형을 일관되게 유지한다." },
+      "HP-04": { "group": "pod", "name": "Left Paddle", "desc": "장갑을 착용한 상태에서도 좌측 버튼을 쉽게 누를 수 있도록 접촉 면적을 확장한 조작 패들. 전자 스위치를 직접 노출하지 않고 외부 조작력을 전달한다." },
+      "HP-05": { "group": "pod", "name": "Rear Cable Cover", "desc": "Left Pod와 Right Pod 사이의 배선을 헬멧 후면을 따라 보호하는 케이블 덕트. 전선을 외부에 노출하지 않고 좌우 Pod를 하나의 시스템으로 연결한다." },
+      "DH-01": { "group": "modern", "name": "Modern Helmet", "desc": "현대형 전술 헬멧과 레일 시스템을 기준으로 HaloPod의 장착 방식을 보여주는 전시용 헬멧 모델. 실제 보호성능을 구현하기 위한 부품은 아니다." },
+      "HP-03A-L": { "group": "modern", "name": "Left Rail Adapter", "desc": "Modern Helmet의 좌측 레일과 Left Pod를 연결하는 전용 어댑터. 헬멧 레일을 이용해 Pod를 안정적인 위치에 고정한다." },
+      "HP-03A-R": { "group": "modern", "name": "Right Rail Adapter", "desc": "Modern Helmet의 우측 레일과 Right Pod를 연결하는 전용 어댑터. 좌·우 Pod를 동일한 높이와 배치 기준으로 유지한다." },
+      "HP-03A-I-L": { "group": "modern", "name": "Left Jaw Insert", "desc": "좌측 Rail Adapter와 헬멧 접촉부 사이의 형상 차이를 보정하는 보조 인서트. 접촉면을 넓혀 어댑터가 헬멧 곡면에 안정적으로 자리 잡도록 한다." },
+      "HP-03A-I-R": { "group": "modern", "name": "Right Jaw Insert", "desc": "우측 Rail Adapter의 접촉면을 보정하는 인서트. 좌측과 대응되는 형상으로 레일 어댑터의 결합 위치를 안정화한다." }
+    }
+  },
+  "hailo-Legacy": {
+    "about": "HaloPod v3.2. 핵심은 Left = 능동 전자부 / Right = 수동 LED부라는 비대칭 구조다. 좌측에는 ESP32-C3·전원·입력·경보 장치가 집중되고, 우측은 LED만 배치된다. 좌우는 HP-05 후면 케이블 커버를 통해 연결된다.",
+    "groups": [
+      { "id": "pod", "name": "공통 Pod 구성" },
+      { "id": "legacy", "name": "Legacy Helmet 전용" }
+    ],
+    "parts": {
+      "HP-01L": { "group": "pod", "name": "Left Pod Housing", "desc": "HaloPod의 주 전자장치를 수용하는 좌측 메인 하우징. ESP32-C3, 전원부, 버튼 입력, 부저, 진동모터와 좌측 LED 8개가 집중되는 능동형 Pod다." },
+      "HP-02L": { "group": "pod", "name": "Left Pod Rear Cover", "desc": "Left Pod 내부 전자부를 보호하고 헬멧 및 어댑터와 맞닿는 후면 커버. 내부 배선과 전자부품을 외부 충격으로부터 분리한다." },
+      "HP-01R": { "group": "pod", "name": "Right Pod Housing", "desc": "우측 LED 8개를 수용하는 수동형 Pod 하우징. 별도의 제어보드나 배터리 없이 Left Pod에서 전달된 전원과 LED 제어 신호를 사용한다." },
+      "HP-02R": { "group": "pod", "name": "Right Pod Rear Cover", "desc": "Right Pod를 닫고 헬멧 측 결합면을 형성하는 후면 커버. LED 배선과 내부 공간을 보호하면서 좌우 Pod의 외형을 일관되게 유지한다." },
+      "HP-04": { "group": "pod", "name": "Left Paddle", "desc": "장갑을 착용한 상태에서도 좌측 버튼을 쉽게 누를 수 있도록 접촉 면적을 확장한 조작 패들. 전자 스위치를 직접 노출하지 않고 외부 조작력을 전달한다." },
+      "HP-05": { "group": "pod", "name": "Rear Cable Cover", "desc": "Left Pod와 Right Pod 사이의 배선을 헬멧 후면을 따라 보호하는 케이블 덕트. 전선을 외부에 노출하지 않고 좌우 Pod를 하나의 시스템으로 연결한다." },
+      "DH-02": { "group": "legacy", "name": "Legacy Helmet", "desc": "기존형 헬멧 환경에서 HaloPod의 장착 구조와 사용자 인터페이스를 시각화하기 위한 전시용 헬멧 모델. 방탄 기능을 목적으로 하지 않는다." },
+      "HP-03B-L": { "group": "legacy", "name": "Left Band Adapter", "desc": "전용 레일이 없는 Legacy Helmet에 Left Pod를 장착하기 위한 곡면 밴드형 어댑터. 헬멧 외형을 따라 Pod의 위치와 각도를 유지한다." },
+      "HP-03B-R": { "group": "legacy", "name": "Right Band Adapter", "desc": "Legacy Helmet 우측에 Right Pod를 고정하는 밴드형 어댑터. 좌측 어댑터와 함께 양쪽 Pod의 대칭 배치를 형성한다." }
+    }
+  }
+}

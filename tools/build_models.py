@@ -33,6 +33,7 @@ from scipy.spatial import cKDTree
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "web" / "models"
 EXPLODE = json.loads((ROOT / "tools" / "explode.json").read_text(encoding="utf-8"))
+INFO = json.loads((ROOT / "tools" / "parts_info.json").read_text(encoding="utf-8"))
 TOL_MM = 0.5  # max allowed bounding-box / centre shift per part
 
 # name: shown in the viewer, src: folder searched recursively, match: file-name prefix filter,
@@ -116,9 +117,26 @@ def source_files(model):
     return sorted(p for p in (ROOT / model["src"]).rglob("*") if p.suffix.lower() == ".stl" and p.name.startswith(model["match"]))
 
 
+def part_code(stem: str, known) -> str:
+    """'B-01_베이스_하우징' -> 'B-01', 'Modern_Left_Pod_Housing_HP-01L' -> 'HP-01L' (first or last token)."""
+    words = stem.split("_")
+    for w in (words[0], words[-1]):
+        if w in known:
+            return w
+    return ""
+
+
 def apply_manifest(model, doc):
-    """Names, explode moves (mm) and view settings for the viewer; writes web/models/<key>.json."""
+    """Names, descriptions, groups, explode moves (mm) and view settings; writes web/models/<key>.json."""
     moves = EXPLODE.get(model["key"], {})
+    info = INFO.get(model["key"], {})
+    known = info.get("parts", {})
+    doc.pop("about", None)
+    doc.pop("groups", None)
+    if info.get("about"):
+        doc["about"] = info["about"]
+    if info.get("groups"):
+        doc["groups"] = info["groups"]
     names = {p["file"] for p in doc["parts"]}
     for extra in sorted(set(moves) - {"_comment"} - names):
         print(f"!! {model['name']}: explode.json lists {extra}, which has no STL")
@@ -126,13 +144,32 @@ def apply_manifest(model, doc):
     doc.pop("view", None)
     if "view" in model:
         doc["view"] = model["view"]
+    used = set()
     for p in doc["parts"]:
-        p["name"] = part_name(Path(p["file"]).stem)
+        stem = Path(p["file"]).stem
+        code = part_code(stem, known)
+        for k in ("alt", "desc", "group", "code"):
+            p.pop(k, None)
+        p["name"] = part_name(stem)
+        if code:
+            used.add(code)
+            meta = known[code]
+            alt = p["name"]
+            p["name"] = f"{code} {meta['name']}"
+            p["code"] = code
+            if alt != p["name"] and any("\uac00" <= ch <= "\ud7a3" for ch in alt):
+                p["alt"] = alt[len(code):].strip() if alt.startswith(code) else alt  # Korean name from the file
+            p["desc"] = meta["desc"]
+            p["group"] = meta["group"]
+        else:
+            print(f"!! {model['name']}: no description for {p['file']} (tools/parts_info.json)")
         if p["file"] in moves:
             p["offset"] = moves[p["file"]]
         else:
             p.pop("offset", None)
             print(f"!! {model['name']}: no explode move for {p['file']} (viewer will use the automatic direction)")
+    for extra in sorted(set(known) - used):
+        print(f"!! {model['name']}: parts_info.json describes {extra}, which has no STL")
     (OUT / f"{model['key']}.json").write_text(json.dumps(doc, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     return doc
 

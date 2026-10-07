@@ -58,18 +58,21 @@ try {
 
 
 // settings that survive a reload (best effort: storage can be unavailable)
+const UI_VERSION = 2; // bump to reset saved values whose meaning or default changed
 const saved = (() => {
   try {
-    return JSON.parse(localStorage.getItem('holohand-ui') || '{}');
+    const v = JSON.parse(localStorage.getItem('holohand-ui') || '{}');
+    if (v.v !== UI_VERSION) delete v.sens; // older versions saved a twitchier default
+    return v;
   } catch {
     return {};
   }
 })();
-const ui = { skeleton: true, labels: true, feed: true, handExplode: true, blur: true, holo: true, sens: 0.55, mode: 'sphere', ...saved };
+const ui = { skeleton: true, labels: true, feed: true, handExplode: true, blur: true, holo: true, sens: 0.35, mode: 'sphere', ...saved };
 function saveUi() {
   try {
     const { blur, holo, sens, mode } = ui;
-    localStorage.setItem('holohand-ui', JSON.stringify({ blur, holo, sens, mode }));
+    localStorage.setItem('holohand-ui', JSON.stringify({ v: UI_VERSION, blur, holo, sens, mode }));
   } catch {
     /* private mode etc. */
   }
@@ -112,6 +115,7 @@ scene.onModel = (i, entry) => {
   const def = entry.def;
   $('m-name').textContent = def.name;
   $('m-sub').textContent = def.subtitle;
+  $('m-about').textContent = def.manifest?.about || '';
   $('m-count').textContent = `${entry.parts.length} 부품`;
   chipBox.querySelectorAll('button').forEach((b) => b.classList.toggle('active', +b.dataset.i === i));
   buildPartList();
@@ -121,14 +125,20 @@ scene.onModel = (i, entry) => {
 };
 
 const fmt = (v) => (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2));
+/** Display name of a part's group ("B 계열 · 베이스"), from the model's group table. */
+function groupName(p) {
+  const groups = scene.entry?.def.manifest?.groups || [];
+  return groups.find((g) => g.id === p?.group)?.name || '';
+}
 function showPart(i) {
   const p = i >= 0 ? scene.parts[i] : null;
   $('pc-name').textContent = p ? p.name : '선택된 부품 없음';
-  $('pc-desc').textContent = p
-    ? [p.desc, `파일  ${p.file}`, `크기  ${fmt(p.size.x)} × ${fmt(p.size.y)} × ${fmt(p.size.z)}`, `삼각형  ${p.tris.toLocaleString()}`]
-        .filter(Boolean)
-        .join('\n')
-    : '부품을 가리키거나 클릭하세요.';
+  $('pc-group').textContent = p ? groupName(p) : '';
+  $('pc-alt').textContent = p?.alt || '';
+  $('pc-desc').textContent = p ? p.desc || '' : '부품을 가리키거나 클릭하세요.';
+  $('pc-meta').textContent = p
+    ? [`파일  ${p.file}`, `크기  ${fmt(p.size.x)} × ${fmt(p.size.y)} × ${fmt(p.size.z)} mm`, `삼각형  ${p.tris.toLocaleString()}`].join('\n')
+    : '';
   $('pc-dot').style.background = p ? p.color : '#555a70';
   $('pc-btns').classList.toggle('show', !!p && i === scene.sel);
   $('pc-iso').classList.toggle('on', scene.isolate);
@@ -145,7 +155,22 @@ function select(i) {
 function buildPartList() {
   const ul = $('plist');
   ul.innerHTML = '';
-  for (const p of scene.parts) {
+  // grouped by series (B / Y / H / L, common Pod / helmet specific), in the order of the group table
+  const groups = scene.entry?.def.manifest?.groups || [];
+  const order = (p) => {
+    const k = groups.findIndex((g) => g.id === p.group);
+    return k < 0 ? groups.length : k;
+  };
+  const sorted = [...scene.parts].sort((a, b) => order(a) - order(b) || a.name.localeCompare(b.name, undefined, { numeric: true }));
+  let lastGroup = null;
+  for (const p of sorted) {
+    if (groups.length && p.group !== lastGroup) {
+      lastGroup = p.group;
+      const h = document.createElement('li');
+      h.className = 'grp';
+      h.textContent = groupName(p) || '기타';
+      ul.appendChild(h);
+    }
     const li = document.createElement('li');
     li.dataset.i = p.i;
     li.className = p.visible ? '' : 'off';
@@ -302,7 +327,7 @@ if (found.length) switchModel(0);
 // ------------------------------------------------------------------ camera + tracking
 const tracker = new HandTracker();
 const engine = new GestureEngine();
-setSens(clamp(+ui.sens || 0.55, 0.2, 1.5));
+setSens(clamp(+ui.sens || 0.35, 0.2, 1.5));
 
 // for debugging in the browser console (dev server only)
 if (import.meta.env.DEV) Object.assign(window, { __scene: scene, __tracker: tracker, __engine: engine, __ui: ui });
@@ -382,6 +407,14 @@ const calmRoll = new Map(); // wrist twist averaged over a few frames: shake can
 // after smoothing, a deliberate twist is ~0.05 rad
 const dead = () => 0.006 + 0.016 * (1.5 - ui.sens);
 const dwellTime = () => 0.6 + Math.max(0, 1 - ui.sens) * 0.6;
+const WARMUP = 0.4; // s: a hand that just came into view is ignored while its tracking settles...
+const WARMUP_FRAMES = 8; // ...and for at least this many tracking frames
+const STILL = 110; // px/s: the explode only follows the hand while the palm is about this still
+const handSince = new Map(); // hand id -> { t: time it appeared, n: tracking frames since }
+let lastPerc = null;
+const palmSpeed = new Map(); // hand id -> smoothed palm speed (px/s)
+const prevRaw = new Map(); // hand id -> last palm position before the extra smoothing (for the speed)
+let lastGesture = '';
 let activeKey = '';
 
 function setActive(key) {
@@ -398,9 +431,17 @@ function endGrab() {
 function control(t, dt) {
   const live = perc.hands.filter((h) => !h.held);
   $('s-hands').textContent = String(live.length);
+  for (const id of [...handSince.keys()]) if (!live.some((h) => h.id === id)) handSince.delete(id);
+  const fresh = perc !== lastPerc; // a new tracking result arrived this frame
+  lastPerc = perc;
+  for (const h of live) {
+    if (!handSince.has(h.id)) handSince.set(h.id, { t, n: 0 });
+    if (fresh) handSince.get(h.id).n++;
+  }
+  const settled = live.filter((h) => t - handSince.get(h.id).t >= WARMUP && handSince.get(h.id).n >= WARMUP_FRAMES);
 
   // two hands: distance between palms = zoom
-  if (live.length >= 2) {
+  if (settled.length >= 2) {
     const a = live[0].palm, b = live[1].palm;
     const dist = Math.hypot((a.x - b.x) * W, (a.y - b.y) * H);
     if (!zoomRef) zoomRef = { d0: Math.max(60, dist), s0: scene.scaleTarget };
@@ -417,15 +458,18 @@ function control(t, dt) {
   }
   zoomRef = null;
 
-  const h = live[0];
+  const h = live.length === 1 ? settled[0] : null; // one hand only (a second, unsettled hand pauses control)
   if (!h) {
     endGrab();
     scene.holdVel = draggingMouse;
     prevPalm.clear();
     calmPalm.clear();
     calmRoll.clear();
+    palmSpeed.clear();
+    prevRaw.clear();
     handExplode = null;
     fistT = 0;
+    lastGesture = '';
     setActive('');
     return;
   }
@@ -443,8 +487,25 @@ function control(t, dt) {
   calmRoll.set(h.id, roll);
   const twist = Math.abs(roll) > dead() ? roll : 0;
   fistT = g === 'FIST' ? fistT + dt : 0;
+  // a gesture change makes the palm centre jump; start measuring movement afresh
+  if (g !== lastGesture) prevPalm.delete(h.id);
+  lastGesture = g;
+  const prev = prevPalm.get(h.id);
+  const step = prev ? Math.hypot(palmPx.x - prev.x, palmPx.y - prev.y) : 0;
+  // palm speed, measured before the extra smoothing so a move is noticed at once:
+  // rises fast when the hand starts moving, falls slowly after it stops
+  const pr = prevRaw.get(h.id);
+  prevRaw.set(h.id, raw);
+  const rawStep = pr && prev ? Math.hypot(raw.x - pr.x, raw.y - pr.y) : 0;
+  const inst = rawStep / Math.max(dt, 1e-3), was = palmSpeed.get(h.id) ?? 0;
+  const speed = inst > was ? was * 0.4 + inst * 0.6 : was * 0.85 + inst * 0.15;
+  palmSpeed.set(h.id, speed);
 
-  if (g === 'OPEN' || g === 'FIST' || g === 'NONE') {
+  if (g === 'NONE') {
+    // a relaxed or half-open hand does nothing, so a hand that is just in view doesn't move the model
+    scene.setHover(-1);
+    setActive('');
+  } else if (g === 'OPEN' || g === 'FIST') {
     // openness drives the explosion
     if (g === 'FIST') {
       scene.explodeTarget = 0;
@@ -452,8 +513,9 @@ function control(t, dt) {
     } else if (ui.handExplode) {
       const want = clamp((h.openness - 0.12) / 0.78, 0, 1);
       if (handExplode === null) handExplode = scene.explodeTarget;
-      // follow the hand slowly, and not at all for tiny finger movements
-      if (Math.abs(want - handExplode) > 0.04 * (1.6 - ui.sens)) handExplode += (want - handExplode) * (1 - Math.exp(-(1.2 + 3 * ui.sens) * dt));
+      // follow the hand slowly, only while the palm is held still (not while it rotates the model),
+      // and not at all for tiny finger movements
+      if (speed < STILL && Math.abs(want - handExplode) > 0.05 * (1.6 - ui.sens)) handExplode += (want - handExplode) * (1 - Math.exp(-(1 + 3 * ui.sens) * dt));
       scene.explodeTarget = handExplode;
     }
     // a held fist also brings moved parts home
@@ -461,16 +523,18 @@ function control(t, dt) {
       scene.resetParts();
       toast('부품 원위치');
     }
-    // moving the hand rotates the model
-    const prev = prevPalm.get(h.id);
-    if (prev) {
-      const dx = palmPx.x - prev.x, dy = palmPx.y - prev.y;
-      if (Math.hypot(dx, dy) > 1.5 + (1.5 - ui.sens) * 3) scene.rotateBy(dx * 0.0048 * ui.sens, dy * 0.0032 * ui.sens, dt);
+    // moving the open hand rotates the model. The dead zone is a palm speed (px/s, so it does not
+    // depend on the frame rate) and is subtracted, so there is no jump at its edge.
+    if (g === 'OPEN' && prev && step > 0) {
+      const dz = 40 + (1.5 - ui.sens) * 60;
+      if (speed > dz) {
+        const k = (1 - dz / speed) * ui.sens;
+        scene.rotateBy((palmPx.x - prev.x) * k * 0.0048, (palmPx.y - prev.y) * k * 0.0032, dt);
+      }
+      if (twist) scene.rollBy(twist * 0.7 * ui.sens);
     }
-    if (twist) scene.rollBy(twist * 0.7 * ui.sens);
     scene.setHover(-1);
-    setActive(g === 'NONE' ? 'MOVE' : g);
-    if (g === 'OPEN' && prev && Math.hypot(palmPx.x - prev.x, palmPx.y - prev.y) > 6) setActive('MOVE');
+    setActive(g === 'OPEN' && speed > STILL ? 'MOVE' : g);
   } else {
     if (g === 'POINT') {
       const idx = scene.pick(h.tip.x * W, h.tip.y * H, 95);
@@ -867,10 +931,119 @@ function drawBack(t) {
   if (ui.holo) drawHud(t);
 }
 
+/** Word-wrap for canvas text (Korean and English both break at spaces; long words break anywhere). */
+function wrapText(text, maxW) {
+  const lines = [];
+  let line = '';
+  for (const word of text.split(/\s+/)) {
+    const tryLine = line ? line + ' ' + word : word;
+    if (ctx.measureText(tryLine).width <= maxW) line = tryLine;
+    else {
+      if (line) lines.push(line);
+      line = word;
+      while (ctx.measureText(line).width > maxW) {
+        let k = line.length - 1;
+        while (k > 1 && ctx.measureText(line.slice(0, k)).width > maxW) k--;
+        lines.push(line.slice(0, k));
+        line = line.slice(k);
+      }
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+const SANS = 'ui-sans-serif, system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif';
+/** HUD box with the description of the highlighted part (pointed at / hovered, else selected). */
+function drawCallout() {
+  if (!scene.entry || scene.pending >= 0 || scene.pop < 0.6) return;
+  const i = scene.hover >= 0 ? scene.hover : scene.sel;
+  const p = scene.parts[i];
+  if (!p || !p.visible || !p.desc) return;
+  const at = scene.labelPoints().find((q) => q.i === i);
+  if (!at) return;
+  const BOX_W = Math.min(320, W - 40);
+  const pad = 12;
+  ctx.font = `500 12.5px ${SANS}`;
+  const lines = wrapText(p.desc, BOX_W - pad * 2);
+  const group = groupName(p);
+  const boxH = pad + (group ? 16 : 0) + 20 + (p.alt ? 17 : 0) + 8 + lines.length * 18 + pad - 4;
+  // to the right of the part, or to the left when there is no room; never under the panel
+  const panelR = W > 900 ? 300 : 250;
+  let x = at.x + 70;
+  if (x + BOX_W > W - 12) x = at.x - 70 - BOX_W;
+  x = clamp(x, panelR, W - BOX_W - 12);
+  const y = clamp(at.y - boxH / 2, 64, H - boxH - 80);
+  const amber = '#ffb547', line = ui.holo ? 'rgba(95, 228, 255, 0.75)' : 'rgba(255,255,255,0.6)';
+  ctx.save();
+  // leader line from the part to the box
+  const ex = x + (x > at.x ? 0 : BOX_W), ey = clamp(at.y, y + 14, y + boxH - 14);
+  ctx.strokeStyle = amber;
+  ctx.lineWidth = 1.4;
+  ctx.shadowColor = 'rgba(255, 181, 71, 0.8)';
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  ctx.moveTo(at.x, at.y);
+  ctx.lineTo(ex + (x > at.x ? -18 : 18), ey);
+  ctx.lineTo(ex, ey);
+  ctx.stroke();
+  ctx.fillStyle = amber;
+  ctx.beginPath();
+  ctx.arc(at.x, at.y, 4.5, 0, Math.PI * 2);
+  ctx.fill();
+  // box
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = ui.holo ? 'rgba(3, 18, 30, 0.86)' : 'rgba(13, 15, 26, 0.9)';
+  ctx.strokeStyle = line;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect ? ctx.roundRect(x, y, BOX_W, boxH, 8) : ctx.rect(x, y, BOX_W, boxH);
+  ctx.fill();
+  ctx.stroke();
+  // corner brackets
+  ctx.strokeStyle = amber;
+  ctx.lineWidth = 2;
+  const c = 10;
+  ctx.beginPath();
+  ctx.moveTo(x, y + c); ctx.lineTo(x, y); ctx.lineTo(x + c, y);
+  ctx.moveTo(x + BOX_W - c, y + boxH); ctx.lineTo(x + BOX_W, y + boxH); ctx.lineTo(x + BOX_W, y + boxH - c);
+  ctx.stroke();
+  // text
+  let ty = y + pad;
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  if (group) {
+    ctx.font = `600 10px ${MONO}`;
+    ctx.fillStyle = 'rgba(95, 228, 255, 0.9)';
+    ctx.fillText(group.toUpperCase(), x + pad, ty);
+    ty += 16;
+  }
+  ctx.font = `700 14px ${SANS}`;
+  ctx.fillStyle = amber;
+  ctx.fillText(p.name, x + pad, ty, BOX_W - pad * 2);
+  ty += 20;
+  if (p.alt) {
+    ctx.font = `500 11.5px ${SANS}`;
+    ctx.fillStyle = 'rgba(200, 225, 235, 0.7)';
+    ctx.fillText(p.alt, x + pad, ty);
+    ty += 17;
+  }
+  ty += 6;
+  ctx.font = `500 12.5px ${SANS}`;
+  ctx.fillStyle = '#e4f7fc';
+  for (const l of lines) {
+    ctx.fillText(l, x + pad, ty);
+    ty += 18;
+  }
+  ctx.restore();
+}
+
 function drawOverlay() {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.clearRect(0, 0, W, H);
   if (ui.labels) drawLabels();
+  drawCallout();
   const live = perc.hands.filter((h) => !h.held);
   if (ui.skeleton) for (const h of live) drawHand(h);
   for (const h of live) drawRing(h);

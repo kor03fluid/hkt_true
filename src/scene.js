@@ -323,6 +323,8 @@ export class StlScene {
       return {
         i: idx,
         name: info.name || partLabel(src.file.split('/').pop()),
+        alt: info.alt || '', // Korean name from the file, when the display name is English
+        group: info.group || '',
         file: src.file,
         desc: info.desc || '',
         color: this.holo ? holoCol : color,

@@ -38,7 +38,7 @@ export function repoModels() {
     }
     const parts = Object.fromEntries(doc.parts.map((p) => [p.file, p]));
     out.push({
-      ...finish(doc.name, [], { name: doc.name, subtitle: doc.subtitle, up: doc.up, view: doc.view, parts }),
+      ...finish(doc.name, [], { name: doc.name, subtitle: doc.subtitle, up: doc.up, view: doc.view, about: doc.about, groups: doc.groups, parts }),
       binUrl,
       parts: doc.parts.map((p) => ({ file: p.file, packed: p })),
     });

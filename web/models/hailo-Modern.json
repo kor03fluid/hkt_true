@@ -19,12 +19,15 @@
     110.35067749023439,
     120.00091769210026
    ],
-   "name": "DH-01 Helmet",
+   "name": "DH-01 Modern Helmet",
    "offset": [
     0,
     0,
     0
-   ]
+   ],
+   "code": "DH-01",
+   "desc": "현대형 전술 헬멧과 레일 시스템을 기준으로 HaloPod의 장착 방식을 보여주는 전시용 헬멧 모델. 실제 보호성능을 구현하기 위한 부품은 아니다.",
+   "group": "modern"
   },
   {
    "file": "Modern_Left_Adapter_JawInsert_HP-03A-I-L.stl",
@@ -44,12 +47,15 @@
     110.15093574518254,
     25.599941253662113
    ],
-   "name": "HP-03A-I-L Left Adapter JawInsert",
+   "name": "HP-03A-I-L Left Jaw Insert",
    "offset": [
     0,
     25,
     0
-   ]
+   ],
+   "code": "HP-03A-I-L",
+   "desc": "좌측 Rail Adapter와 헬멧 접촉부 사이의 형상 차이를 보정하는 보조 인서트. 접촉면을 넓혀 어댑터가 헬멧 곡면에 안정적으로 자리 잡도록 한다.",
+   "group": "modern"
   },
   {
    "file": "Modern_Left_Adapter_Rail_HP-03A-L.stl",
@@ -69,12 +75,15 @@
     119.05080414480038,
     49.00003433227539
    ],
-   "name": "HP-03A-L Left Adapter Rail",
+   "name": "HP-03A-L Left Rail Adapter",
    "offset": [
     0,
     50,
     0
-   ]
+   ],
+   "code": "HP-03A-L",
+   "desc": "Modern Helmet의 좌측 레일과 Left Pod를 연결하는 전용 어댑터. 헬멧 레일을 이용해 Pod를 안정적인 위치에 고정한다.",
+   "group": "modern"
   },
   {
    "file": "Modern_Left_Paddle_HP-04.stl",
@@ -99,7 +108,10 @@
     0,
     160,
     15
-   ]
+   ],
+   "code": "HP-04",
+   "desc": "장갑을 착용한 상태에서도 좌측 버튼을 쉽게 누를 수 있도록 접촉 면적을 확장한 조작 패들. 전자 스위치를 직접 노출하지 않고 외부 조작력을 전달한다.",
+   "group": "pod"
   },
   {
    "file": "Modern_Left_Pod_Housing_HP-01L.stl",
@@ -124,7 +136,10 @@
     0,
     120,
     0
-   ]
+   ],
+   "code": "HP-01L",
+   "desc": "HaloPod의 주 전자장치를 수용하는 좌측 메인 하우징. ESP32-C3, 전원부, 버튼 입력, 부저, 진동모터와 좌측 LED 8개가 집중되는 능동형 Pod다.",
+   "group": "pod"
   },
   {
    "file": "Modern_Left_Pod_RearCover_HP-02L.stl",
@@ -144,12 +159,15 @@
     133.41525345465845,
     78.11786656157255
    ],
-   "name": "HP-02L Left Pod RearCover",
+   "name": "HP-02L Left Pod Rear Cover",
    "offset": [
     0,
     85,
     0
-   ]
+   ],
+   "code": "HP-02L",
+   "desc": "Left Pod 내부 전자부를 보호하고 헬멧 및 어댑터와 맞닿는 후면 커버. 내부 배선과 전자부품을 외부 충격으로부터 분리한다.",
+   "group": "pod"
   },
   {
    "file": "Modern_Rear_Cable_Cover_HP-05.stl",
@@ -174,7 +192,10 @@
     -90,
     0,
     30
-   ]
+   ],
+   "code": "HP-05",
+   "desc": "Left Pod와 Right Pod 사이의 배선을 헬멧 후면을 따라 보호하는 케이블 덕트. 전선을 외부에 노출하지 않고 좌우 Pod를 하나의 시스템으로 연결한다.",
+   "group": "pod"
   },
   {
    "file": "Modern_Right_Adapter_JawInsert_HP-03A-I-R.stl",
@@ -194,12 +215,15 @@
     -105.85075323447465,
     25.59994125366212
    ],
-   "name": "HP-03A-I-R Right Adapter JawInsert",
+   "name": "HP-03A-I-R Right Jaw Insert",
    "offset": [
     0,
     -25,
     0
-   ]
+   ],
+   "code": "HP-03A-I-R",
+   "desc": "우측 Rail Adapter의 접촉면을 보정하는 인서트. 좌측과 대응되는 형상으로 레일 어댑터의 결합 위치를 안정화한다.",
+   "group": "modern"
   },
   {
    "file": "Modern_Right_Adapter_Rail_HP-03A-R.stl",
@@ -219,12 +243,15 @@
     -105.85079193115233,
     49.00003433227539
    ],
-   "name": "HP-03A-R Right Adapter Rail",
+   "name": "HP-03A-R Right Rail Adapter",
    "offset": [
     0,
     -50,
     0
-   ]
+   ],
+   "code": "HP-03A-R",
+   "desc": "Modern Helmet의 우측 레일과 Right Pod를 연결하는 전용 어댑터. 좌·우 Pod를 동일한 높이와 배치 기준으로 유지한다.",
+   "group": "modern"
   },
   {
    "file": "Modern_Right_Pod_Housing_HP-01R.stl",
@@ -249,7 +276,10 @@
     0,
     -120,
     0
-   ]
+   ],
+   "code": "HP-01R",
+   "desc": "우측 LED 8개를 수용하는 수동형 Pod 하우징. 별도의 제어보드나 배터리 없이 Left Pod에서 전달된 전원과 LED 제어 신호를 사용한다.",
+   "group": "pod"
   },
   {
    "file": "Modern_Right_Pod_RearCover_HP-02R.stl",
@@ -269,17 +299,31 @@
     -116.35027690949659,
     78.11753624943664
    ],
-   "name": "HP-02R Right Pod RearCover",
+   "name": "HP-02R Right Pod Rear Cover",
    "offset": [
     0,
     -85,
     0
-   ]
+   ],
+   "code": "HP-02R",
+   "desc": "Right Pod를 닫고 헬멧 측 결합면을 형성하는 후면 커버. LED 배선과 내부 공간을 보호하면서 좌우 Pod의 외형을 일관되게 유지한다.",
+   "group": "pod"
   }
  ],
  "name": "hailo Modern",
  "subtitle": "hailo/ 원본 STL 11개 · 좌표 그대로",
  "up": "z",
+ "about": "HaloPod v3.2. 핵심은 Left = 능동 전자부 / Right = 수동 LED부라는 비대칭 구조다. 좌측에는 ESP32-C3·전원·입력·경보 장치가 집중되고, 우측은 LED만 배치된다. 좌우는 HP-05 후면 케이블 커버를 통해 연결된다.",
+ "groups": [
+  {
+   "id": "pod",
+   "name": "공통 Pod 구성"
+  },
+  {
+   "id": "modern",
+   "name": "Modern Helmet 전용"
+  }
+ ],
  "view": {
   "x": 0.42,
   "y": -1.2,
