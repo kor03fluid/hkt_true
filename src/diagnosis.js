@@ -94,7 +94,7 @@ function normPart(raw, code) {
     remove: num(r.remove, 5), replace: num(r.replace, 15),
     tools: arr(r.tools), materials: arr(r.materials),
     spare: r.spare || `${code || '부품'} 예비품 (동일 형상 · 재질은 원 설계 확인)`,
-    safety: arr(r.safety), note: r.note || '',
+    safety: arr(r.safety), note: r.note || '', name: r.name || '',
   };
 }
 
@@ -157,7 +157,8 @@ function baseLevelOf(d, pk, code, action, kb) {
     // without the model KB only the direct prerequisites are known
     const n = kb ? accessOrder(code, kb).length : pk.access.length;
     if (pk.crit <= 2 && UNIT_REPLACE_ROLES.includes(pk.role) && n <= 1) return ['unit', '구성품 교환'];
-    return ['field', pk.crit === 3 ? '주요 부품 교환 — 분해·정렬 필요' : '부품 교환 — 분해·정렬 필요'];
+    if (['electronics', 'drive'].includes(pk.role)) return ['field', '전자·구동부 교환'];
+    return ['field', n > 1 ? '부품 교환 — 분해·정렬 필요' : pk.crit === 3 ? '주요 부품 교환' : '부품 교환'];
   }
   const hard = ['electronics', 'drive'].includes(pk.role);
   if (['scratch', 'wear', 'corrosion'].includes(d.type) && pk.crit <= 2 && !hard) return ['unit', '표면 보수·윤활'];
@@ -184,14 +185,15 @@ export function assess(defect, partKb, code = defect && defect.part, kb = null) 
   }
   const action = actionOf(defect, pk, code);
   const [baseLevel, levelWhy] = baseLevelOf(defect, pk, code, action, kb);
-  const level = LEVEL_IDS[Math.min(2, LEVEL_IDS.indexOf(baseLevel) + clamp(num(defect.escalated, 0), 0, 2))];
+  // a condemned defect stays at depot whatever its (forced) replace action would normally need
+  const level = defect.condemned ? 'depot' : LEVEL_IDS[Math.min(2, LEVEL_IDS.indexOf(baseLevel) + clamp(num(defect.escalated, 0), 0, 2))];
   const needsConfirm = defect.conf != null && defect.conf < 0.8;
   return { risk, priority, action, level, baseLevel, needsConfirm, why: { priority: why, level: levelWhy } };
 }
 
 /** Whole-equipment diagnosis -> Report (see MAINT_SPEC §4). */
 export function diagnose({ parts = [], defects = [], kb = null } = {}) {
-  defects = arr(defects).filter((d) => d && d.id != null);
+  defects = arr(defects).filter((d) => d && d.id != null && d.part != null);
   const codes = [];
   const addCode = (c) => { if (c != null && !codes.includes(c)) codes.push(c); };
   arr(parts).forEach((p) => p && addCode(p.code));
@@ -326,9 +328,10 @@ export function repairPlan({ defect, parts = [], kb = null, modelKey = '', seq =
   const { action } = a;
   const monitor = action === 'monitor';
   const wo = workOrder(modelKey, defect.id, seq);
+  // work card names: the KB's Korean name, else the Korean name from the file, else the display name
   const label = (c) => {
     const p = arr(parts).find((x) => x && x.code === c);
-    const n = p && p.name;
+    const n = kbPart(kb, c).name || (p && (p.alt || p.name));
     return n ? (String(n).startsWith(c) ? n : `${c} ${n}`) : c;
   };
   const access = monitor ? [] : accessOrder(code, kb);
@@ -336,15 +339,16 @@ export function repairPlan({ defect, parts = [], kb = null, modelKey = '', seq =
   const extra = code === 'HP-01L' && (defect.type === 'dent' || defect.type === 'deform') ? [BATTERY_SAFETY] : [];
   const safety = uniq([...pk.safety, ...extra, ...access.flatMap((c) => kbPart(kb, c).safety)]);
 
-  const fnIds = Object.keys(pk.functions);
+  // functions fed by the target and by every part taken off on the way are all checked after reassembly
+  const fed = new Set([code, ...access].flatMap((c) => Object.keys(kbPart(kb, c).functions)));
   const fns = arr(kb && kb.functions);
-  const checks = fns.filter((f) => fnIds.includes(f.id)).map((f) => f.check).filter(Boolean);
+  const checks = fns.filter((f) => fed.has(f.id)).map((f) => f.check).filter(Boolean);
   const verify = uniq([VERIFY_DEFECT, ...checks, ...(access.length ? [VERIFY_REASSEMBLY] : [])]);
 
   let work;
   if (monitor) work = WORK_MONITOR;
   else if (action === 'replace') {
-    work = [`예비품 형상·부품번호(${code}) 대조`, '교체 (손상품 분리 → 예비품 장착)', '체결 (규정 토크, 기술교범 확인)'];
+    work = [`예비품 형상·부품번호(${code}) 대조`, '예비품 장착 (위치·방향 확인)', '체결 (규정 토크, 기술교범 확인)'];
     if (drive) work.push('선회/고각 원점·캘리브레이션');
     if (code === 'HP-01L') work.push('설정·동작 모드 유지 확인');
   } else work = WORK[defect.type] || WORK.dent;
@@ -382,7 +386,11 @@ export function repairPlan({ defect, parts = [], kb = null, modelKey = '', seq =
   };
 }
 
-/** Technician result -> { defect: updated copy, log }. ctx = { modelKey, seq, planned, kb?, level? }. */
+/**
+ * Technician result -> { defect: updated copy, log }. ctx = { modelKey, seq, planned, kb, level? }: pass the
+ * model KB (or the defect's current level from the report), else the echelon of a failed repair is guessed
+ * from default part data.
+ */
 export function applyFeedback(defect, fb = {}, ctx = {}) {
   const d = { ...defect };
   const result = fb.result || 'done';
@@ -409,7 +417,7 @@ export function applyFeedback(defect, fb = {}, ctx = {}) {
       text = '부품 없음 — 보급 대기';
     } else {
       const level = ctx.level || assess(defect, kbPart(ctx.kb, defect.part), defect.part, ctx.kb || null).level;
-      if (level !== 'depot') {
+      if (!defect.condemned && level !== 'depot') {
         d.escalated = Math.min(2, num(defect.escalated, 0) + 1);
         text = level === 'unit' ? '수리 불가 → 야전정비 의뢰' : '수리 불가 → 창정비 후송';
       } else {

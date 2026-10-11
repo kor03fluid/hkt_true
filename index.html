@@ -54,6 +54,7 @@
       <div class="pc-name"><i id="pc-dot"></i><b id="pc-name">선택된 부품 없음</b></div>
       <p class="pc-alt" id="pc-alt"></p>
       <p id="pc-desc">부품을 가리키거나 클릭하세요.</p>
+      <p class="pc-maint" id="pc-maint"></p>
       <p class="pc-meta" id="pc-meta"></p>
       <div class="pc-btns" id="pc-btns">
         <button id="pc-hide">숨기기</button>
@@ -90,9 +91,33 @@
 
   <nav id="chips">
     <div class="grp" id="chip-models"><span class="gl">모델</span></div>
+    <div class="grp"><button id="b-maint" title="AI 정비 진단망 (M)">🛠 AI 정비</button></div>
     <div class="grp"><button id="b-open" title="STL 파일이 든 폴더 열기">📂 폴더 열기</button></div>
     <input id="f-dir" type="file" webkitdirectory multiple hidden />
   </nav>
+  <aside id="diag" aria-label="AI 정비 진단망">
+    <div class="dg-head">
+      <div class="dg-r1"><i id="dg-odot"></i><b>AI 정비 진단망</b><span class="tag">예시 데이터</span><span id="dg-eq" class="dg-eq"></span><button id="dg-col" title="패널 접기">▸</button></div>
+      <div class="dg-r2"><span id="dg-ready" class="dg-ready grey">판독 대기</span><span class="dg-hp"><b id="dg-health">—</b><small>건강도</small></span></div>
+      <div class="dg-hbar"><i id="dg-hbar"></i></div>
+      <div id="dg-counts" class="dg-counts"></div>
+      <div id="dg-reason" class="dg-reason"></div>
+    </div>
+    <div id="dg-fleet" class="dg-fleet"></div>
+    <div class="dg-next">
+      <ol id="dg-steps" class="dg-steps"><li>검출</li><li>진단</li><li>수리</li><li>재검사</li></ol>
+      <button id="dg-cta" class="dg-cta" data-air>AI 판독 결과 표시</button>
+    </div>
+    <nav id="dg-tabs" class="dg-tabs">
+      <button data-tab="defects" data-air class="on">결함</button>
+      <button data-tab="net" data-air title="부품 → 기능 → 장비 영향">기능망</button>
+      <button data-tab="repair" data-air>수리</button>
+      <button data-tab="history" data-air>이력</button>
+    </nav>
+    <div id="dg-body" class="dg-body"></div>
+    <p class="dg-foot">결함·신뢰도·지식베이스는 시연용 예시 데이터이며 실제 검사 결과가 아닙니다. 화면의 AI 판독은 저장된 결과를 다시 보여 줍니다.</p>
+  </aside>
+  <button id="dg-open" title="AI 정비 패널 열기">◂ 진단</button>
   <div id="toast"></div>
   <div id="banner"></div>
   <div id="loading"><div class="bar"><i id="ld-bar"></i></div><span id="ld-text"></span></div>
@@ -106,7 +131,8 @@
       <div id="found"></div>
       <button id="btn-cam" class="primary">카메라 시작</button>
       <button id="btn-mouse" class="ghost">마우스로 보기</button>
-      <small>마우스: 드래그 회전 · 휠 확대 · 클릭 선택 · Shift+드래그 부품 이동 · Alt+드래그 부품 회전<br />키: Space 분해 · ←→ 모델 · R 시점 · P 부품 원위치 · X X-ray · I 선택 부품만 · H 숨기기</small>
+      <button id="btn-maint" class="ghost">🛠 AI 정비 시연</button>
+      <small>마우스: 드래그 회전 · 휠 확대 · 클릭 선택 · Shift+드래그 부품 이동 · Alt+드래그 부품 회전<br />키: Space 분해 · ←→ 모델 · R 시점 · P 부품 원위치 · X X-ray · I 선택 부품만 · H 숨기기<br />M AI 정비 · Enter 다음 할 일 · N / [ ] 결함 이동</small>
     </div>
   </div>
 

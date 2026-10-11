@@ -27,7 +27,7 @@ export const partLabel = (file) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-/** Models committed to the repo: [{ name, subtitle, up, manifest, binUrl, parts: [{ file, packed }] }] */
+/** Models committed to the repo: [{ name, key, subtitle, up, manifest, binUrl, parts: [{ file, packed }] }] */
 export function repoModels() {
   const out = [];
   for (const [path, doc] of Object.entries(PACKS)) {
@@ -39,6 +39,7 @@ export function repoModels() {
     const parts = Object.fromEntries(doc.parts.map((p) => [p.file, p]));
     out.push({
       ...finish(doc.name, [], { name: doc.name, subtitle: doc.subtitle, up: doc.up, view: doc.view, about: doc.about, groups: doc.groups, parts }),
+      key: path.slice(path.lastIndexOf('/') + 1).replace(/\.json$/, ''), // 'Turret', 'hailo-Modern', ... (maintenance data)
       binUrl,
       parts: doc.parts.map((p) => ({ file: p.file, packed: p })),
     });

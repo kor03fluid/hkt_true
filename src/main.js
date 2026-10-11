@@ -3,6 +3,7 @@ import { StlScene } from './scene.js';
 import { repoModels, localModels } from './library.js';
 import { HandTracker } from './handTracking.js';
 import { GestureEngine, HAND_CONNECTIONS } from './gestureEngine.js';
+import { Maint } from './maint.js';
 import { clamp } from './utils.js';
 
 const $ = (id) => document.getElementById(id);
@@ -18,6 +19,19 @@ const MASK_SCALE = 0.25;
 const banner = $('banner');
 
 let W = innerWidth, H = innerHeight, DPR = 1;
+// screen px covered by the left panel and the AI maintenance panel; the model and the overlays centre
+// between them (relayout() keeps scene, CSS and canvas in step)
+const insets = { l: 300, r: 0 };
+let maint = null;
+function relayout() {
+  const wide = innerWidth > 900;
+  insets.l = wide ? 300 : 0;
+  const diag = maint?.on ? maint.diagWidth() : 0;
+  insets.r = wide && diag ? diag + 28 : 0;
+  document.body.style.setProperty('--inset-l', insets.l + 'px');
+  document.body.style.setProperty('--inset-r', insets.r + 'px');
+  scene?.setInsets(insets.l, insets.r);
+}
 function sizeFx() {
   W = innerWidth;
   H = innerHeight;
@@ -30,7 +44,10 @@ function sizeFx() {
   maskCanvas.height = Math.ceil(H * MASK_SCALE);
 }
 sizeFx();
-addEventListener('resize', sizeFx);
+addEventListener('resize', () => {
+  sizeFx();
+  relayout();
+});
 
 function showBanner(msg, info = false) {
   banner.textContent = msg;
@@ -38,12 +55,12 @@ function showBanner(msg, info = false) {
   banner.style.display = msg ? 'block' : 'none';
 }
 let toastTimer = 0;
-function toast(msg) {
+function toast(msg, ms = 1600) {
   const el = $('toast');
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 1600);
+  toastTimer = setTimeout(() => el.classList.remove('show'), ms);
 }
 
 // ------------------------------------------------------------------ scene + models
@@ -122,6 +139,7 @@ scene.onModel = (i, entry) => {
   showPart(-1);
   toast(def.name);
   if (entry.failed.length) showBanner(`읽지 못한 STL ${entry.failed.length}개: ${entry.failed.join(', ')}`, true);
+  maint?.onModel(i, entry);
 };
 
 const fmt = (v) => (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2));
@@ -140,6 +158,9 @@ function showPart(i) {
     ? [`파일  ${p.file}`, `크기  ${fmt(p.size.x)} × ${fmt(p.size.y)} × ${fmt(p.size.z)} mm`, `삼각형  ${p.tris.toLocaleString()}`].join('\n')
     : '';
   $('pc-dot').style.background = p ? p.color : '#555a70';
+  const mi = p && maint ? maint.partInfo(i) : null; // health line in maintenance mode
+  $('pc-maint').textContent = mi ? mi.text : '';
+  $('pc-maint').style.color = mi ? mi.color : '';
   $('pc-btns').classList.toggle('show', !!p && i === scene.sel);
   $('pc-iso').classList.toggle('on', scene.isolate);
   $('plist').querySelectorAll('li').forEach((li) => li.classList.toggle('sel', +li.dataset.i === scene.sel));
@@ -329,8 +350,24 @@ const tracker = new HandTracker();
 const engine = new GestureEngine();
 setSens(clamp(+ui.sens || 0.35, 0.2, 1.5));
 
+// AI maintenance mode (src/maint.js): panel, defect markers, repair loop
+maint = new Maint({
+  scene,
+  ui,
+  toast,
+  select,
+  showPart,
+  switchModel,
+  setActive,
+  banner: showBanner,
+  insets,
+  relayout,
+  dwellTime: () => dwellTime(),
+});
+relayout();
+
 // for debugging in the browser console (dev server only)
-if (import.meta.env.DEV) Object.assign(window, { __scene: scene, __tracker: tracker, __engine: engine, __ui: ui });
+if (import.meta.env.DEV) Object.assign(window, { __scene: scene, __tracker: tracker, __engine: engine, __ui: ui, __maint: maint });
 let camOn = false;
 let lastVideoTime = -1;
 let perc = { hands: [] };
@@ -379,6 +416,12 @@ function setTracking(text, cls) {
 }
 
 $('btn-cam').onclick = startCamera;
+// AI 정비 demo: camera when possible (falls back to the mouse by itself), then maintenance mode
+$('btn-maint').onclick = () => {
+  startCamera();
+  maint.toggle(true);
+};
+if (location.hash === '#maint') $('btn-maint').click(); // kiosk link
 $('btn-mouse').onclick = () => {
   $('start').classList.add('gone');
   enterMouseMode('');
@@ -450,11 +493,12 @@ function control(t, dt) {
     if (!zoomRef) zoomRef = { d0: Math.max(60, dist), s0: scene.scaleTarget };
     const ratio = dist / zoomRef.d0;
     // small changes in hand distance are ignored, the rest is softened by the sensitivity
-    if (Math.abs(ratio - 1) > 0.05 * (1.6 - ui.sens)) scene.scaleTarget = clamp(zoomRef.s0 * Math.pow(ratio, 0.55 + 0.45 * ui.sens), 0.3, 6);
+    if (Math.abs(ratio - 1) > 0.05 * (1.6 - ui.sens)) scene.scaleTarget = clamp(zoomRef.s0 * Math.pow(ratio, 0.55 + 0.45 * ui.sens), 0.3, scene.maxScale);
     scene.holdVel = true;
     scene.idle = 0;
     endGrab();
     scene.setHover(-1);
+    maint.pointEnd();
     prevPalm.clear();
     setActive('TWO');
     return;
@@ -473,6 +517,7 @@ function control(t, dt) {
     handExplode = null;
     fistT = 0;
     lastGesture = '';
+    maint.pointEnd();
     setActive('');
     return;
   }
@@ -492,6 +537,7 @@ function control(t, dt) {
   fistT = g === 'FIST' ? fistT + dt : 0;
   // a gesture change makes the palm centre jump; start measuring movement afresh
   if (g !== lastGesture) prevPalm.delete(h.id);
+  if (g !== 'POINT') maint.pointEnd();
   lastGesture = g;
   const prev = prevPalm.get(h.id);
   const step = prev ? Math.hypot(palmPx.x - prev.x, palmPx.y - prev.y) : 0;
@@ -513,7 +559,8 @@ function control(t, dt) {
     if (g === 'FIST') {
       scene.explodeTarget = 0;
       handExplode = 0;
-    } else if (ui.handExplode) {
+    } else if (ui.handExplode && !maint.on) {
+      // (in maintenance mode the open hand only turns the model: the palm is the presenter's resting pose)
       const want = clamp((h.openness - 0.12) / 0.78, 0, 1);
       if (handExplode === null) handExplode = scene.explodeTarget;
       // follow the hand slowly, only while the palm is held still (not while it rotates the model),
@@ -521,8 +568,11 @@ function control(t, dt) {
       if (speed < STILL && Math.abs(want - handExplode) > 0.05 * (1.6 - ui.sens)) handExplode += (want - handExplode) * (1 - Math.exp(-(1 + 3 * ui.sens) * dt));
       scene.explodeTarget = handExplode;
     }
-    // a held fist also brings moved parts home
-    if (fistT > 0.6 && scene.movedParts) {
+    // a held fist also brings moved parts home (maintenance: also releases the focus and the procedure)
+    if (fistT > 0.6 && maint.on) {
+      if (maint.release()) toast('초점 해제');
+      fistT = -1e9; // once per fist
+    } else if (fistT > 0.6 && scene.movedParts) {
       scene.resetParts();
       toast('부품 원위치');
     }
@@ -531,6 +581,7 @@ function control(t, dt) {
     if (g === 'OPEN' && prev && step > 0) {
       const dz = 30 + (1.5 - ui.sens) * 40;
       if (speed > dz) {
+        maint.noteInput();
         const k = (1 - dz / speed) * ui.sens * ROT_GAIN;
         scene.rotateBy((palmPx.x - prev.x) * k * 0.0048, (palmPx.y - prev.y) * k * 0.0032, dt);
       }
@@ -539,7 +590,18 @@ function control(t, dt) {
     scene.setHover(-1);
     setActive(g === 'OPEN' && speed > STILL ? 'MOVE' : g);
   } else {
-    if (g === 'POINT') {
+    const tx = h.tip.x * W, ty = h.tip.y * H;
+    // maintenance: the fingertip over a panel air-clicks its buttons; over the scene it targets defect badges first
+    const overUi = maint.on && g === 'POINT' ? document.elementFromPoint(tx, ty)?.closest('#panel,#diag,#chips,#toolbar,.mt-float') : null;
+    if (g === 'POINT' && overUi) {
+      maint.airPoint(document.elementFromPoint(tx, ty), tx, ty, dt);
+      scene.setHover(-1);
+      dwell = { i: -1, t: 0 };
+    } else if (g === 'POINT' && maint.on && (maint.airPoint(null, tx, ty, dt), maint.pointBadge(tx, ty, dt) || scene.focused)) {
+      // a badge is targeted (dwell selects it), or a defect is focused (the other parts are ghosted): no part picking
+      scene.setHover(-1);
+      dwell = { i: -1, t: 0 };
+    } else if (g === 'POINT') {
       const idx = scene.pick(h.tip.x * W, h.tip.y * H, 95);
       scene.setHover(idx);
       if (idx >= 0) {
@@ -550,6 +612,8 @@ function control(t, dt) {
         dwell.t += dt;
         if (dwell.t > dwellTime() && scene.sel !== idx) select(idx);
       } else dwell = { i: idx, t: 0 };
+    } else if (g === 'PINCH' && maint.on && scene.proc) {
+      // parts follow the repair procedure: no grabbing meanwhile
     } else if (g === 'PINCH') {
       const pp = { x: h.pinchPt.x * W, y: h.pinchPt.y * H };
       if (!grab) {
@@ -570,7 +634,8 @@ function control(t, dt) {
     } else if (g === 'PEACE') {
       if (t > peaceCool) {
         peaceCool = t + 1.6;
-        scene.next();
+        if (maint.on) maint.cta(); // the panel's "next action" (never submits a form)
+        else scene.next();
       }
     }
     setActive(g);
@@ -584,7 +649,7 @@ let draggingMouse = false;
 let mouseStart = null;
 let mouseLast = null;
 let mousePart = null; // { i, mode: 'move' | 'spin' }
-const onUi = (e) => e.target.closest && e.target.closest('#panel,#chips,#toolbar,#start');
+const onUi = (e) => e.target.closest?.('#panel,#chips,#toolbar,#start,#diag,#dg-open,.mt-float');
 
 addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || onUi(e)) return;
@@ -602,9 +667,13 @@ addEventListener('pointerdown', (e) => {
 });
 addEventListener('pointermove', (e) => {
   if (!draggingMouse) {
-    if (!onUi(e) && !perc.hands.length) scene.setHover(scene.pick(e.clientX, e.clientY, 0));
+    if (onUi(e) || perc.hands.length) return;
+    // maintenance: a defect badge / callout under the mouse wins over the part under it
+    if (maint.hover(e.clientX, e.clientY)) scene.setHover(-1);
+    else scene.setHover(scene.pick(e.clientX, e.clientY, 0));
     return;
   }
+  maint.noteInput();
   const dx = e.clientX - mouseLast.x, dy = e.clientY - mouseLast.y;
   if (mousePart?.mode === 'move') scene.dragPart(mousePart.i, dx, dy);
   else if (mousePart) scene.spinPart(mousePart.i, dx, dy);
@@ -620,8 +689,13 @@ addEventListener('pointerup', (e) => {
   scene.holdVel = false;
   scene.grabbed = -1;
   if (!mousePart && Math.hypot(e.clientX - mouseStart.x, e.clientY - mouseStart.y) < 5) {
+    if (maint.click(e.clientX, e.clientY)) {
+      mousePart = null;
+      return;
+    }
     const idx = scene.pick(e.clientX, e.clientY, 0);
-    select(idx === scene.sel ? -1 : idx);
+    // in maintenance mode a click on empty space keeps the selected defect
+    if (!(maint.on && idx < 0)) select(idx === scene.sel ? -1 : idx);
   }
   mousePart = null;
 });
@@ -634,7 +708,11 @@ addEventListener(
   { passive: true },
 );
 addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT' && e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  // typing in a form field never triggers shortcuts (range sliders keep their arrow keys)
+  const tg = e.target;
+  if (tg.isContentEditable || tg.tagName === 'TEXTAREA' || tg.tagName === 'SELECT') return;
+  if (tg.tagName === 'INPUT' && (tg.type !== 'range' || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight'))) return;
+  if (maint.key(e)) return;
   const k = e.key.toLowerCase();
   if (e.key === ' ') {
     e.preventDefault();
@@ -688,17 +766,19 @@ function drawRing(h) {
   ctx.shadowBlur = 14;
   if (g === 'POINT') {
     const x = h.tip.x * W, y = h.tip.y * H;
-    ctx.strokeStyle = '#ffb547';
+    ctx.strokeStyle = maint.on ? '#bff6ff' : '#ffb547';
     ctx.lineWidth = 2.5;
     ctx.beginPath();
     ctx.arc(x, y, 20, 0, Math.PI * 2);
     ctx.stroke();
-    // dwell progress towards selecting the part
-    if (dwell.i >= 0 && dwell.i !== scene.sel) {
+    // dwell progress towards selecting the part (or, in maintenance mode, a defect badge / panel button)
+    const mp = maint.ringProgress();
+    const prog = mp != null ? mp : dwell.i >= 0 && dwell.i !== scene.sel ? clamp(dwell.t / dwellTime(), 0, 1) : null;
+    if (prog != null) {
       ctx.strokeStyle = '#fff';
       ctx.lineWidth = 3.5;
       ctx.beginPath();
-      ctx.arc(x, y, 20, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(dwell.t / dwellTime(), 0, 1));
+      ctx.arc(x, y, 20, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * prog);
       ctx.stroke();
     }
     ctx.fillStyle = '#fff';
@@ -765,11 +845,12 @@ function drawLabels() {
   if (!scene.entry || scene.pending >= 0 || scene.pop < 0.6) return;
   const e = clamp((scene.shownExplode - 0.1) / 0.3, 0, 1);
   let pts = scene.labelPoints();
-  const hotOnly = e <= 0.01 || pts.length > MAX_LABELS;
+  const hotOnly = e <= 0.01 || pts.length > MAX_LABELS || maint.on;
   if (hotOnly) pts = pts.filter((p) => p.i === scene.hover || p.i === scene.sel);
   if (!pts.length) return;
   const c = scene.centerScreen();
-  const panelR = W > 900 ? 310 : 260; // the panel is 272 px wide (232 px on narrow screens)
+  const panelR = W > 900 ? insets.l + 10 : 260; // the panel is 272 px wide (232 px on narrow screens)
+  const rightEdge = W - insets.r;
   const left = [], right = [];
   for (const p of pts) (p.x < c.x ? left : right).push(p);
   const maxX = Math.max(...pts.map((p) => p.x), c.x);
@@ -777,8 +858,8 @@ function drawLabels() {
   // keep whole names on screen: columns are placed by the widest label on each side
   ctx.font = LABEL_FONT(true);
   const textW = (list) => Math.max(0, ...list.map((p) => ctx.measureText(p.name).width)) + 12;
-  const colR = clamp(maxX + 80, panelR + 360, W - 16 - textW(right));
-  const colL = clamp(minX - 80, panelR + 16 + textW(left), W - 400);
+  const colR = clamp(maxX + 80, panelR + 360, rightEdge - 16 - textW(right));
+  const colL = clamp(minX - 80, panelR + 16 + textW(left), rightEdge - 400);
   ctx.save();
   ctx.globalAlpha = hotOnly ? 1 : e;
   ctx.textBaseline = 'middle';
@@ -859,6 +940,9 @@ function drawHud(t) {
   if (!h || scene.pop < 0.3 || scene.pending >= 0) return;
   const r = clamp(h.r * 1.06, 80, Math.min(W, H) * 0.37); // grows with the sphere; outer arcs (x1.18) stay on screen
   const cyan = (a) => `rgba(95, 228, 255, ${a})`;
+  // maintenance: a reticle around the focused defect instead of the rings, else readiness-coloured rings
+  const mh = maint.hud();
+  if (mh?.focus) return drawReticle(mh.focus, t);
   bctx.save();
   bctx.translate(h.x, h.y);
   bctx.lineCap = 'round';
@@ -873,7 +957,7 @@ function drawHud(t) {
   bctx.save();
   bctx.rotate(t * 0.06);
   bctx.beginPath();
-  for (let k = 0; k < 120; k++) {
+  for (let k = 0; k < (mh ? 0 : 120); k++) {
     const a = (k / 120) * Math.PI * 2, long = k % 10 === 0;
     const r0 = r - (long ? 10 : 5);
     bctx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0);
@@ -884,7 +968,7 @@ function drawHud(t) {
   // dashed outer ring, turning the other way
   bctx.save();
   bctx.rotate(-t * 0.11);
-  bctx.strokeStyle = cyan(0.45);
+  bctx.strokeStyle = mh ? hexA(mh.color, 0.35) : cyan(0.45);
   bctx.lineWidth = 2;
   bctx.setLineDash([r * 0.18, r * 0.07, r * 0.04, r * 0.07]);
   bctx.beginPath();
@@ -919,11 +1003,49 @@ function drawHud(t) {
   bctx.font = '600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   bctx.textAlign = 'left';
   const tx = Math.cos(-0.6) * r * 1.22, ty = Math.sin(-0.6) * r * 1.22;
-  bctx.fillText(`EXPLODE ${String(Math.round(h.explode * 100)).padStart(3, '0')}%`, tx + 8, ty);
-  bctx.fillText(`SCALE   ${h.scale.toFixed(2)}x`, tx + 8, ty + 15);
-  bctx.fillText(h.sphere > 0.5 ? 'MODE    SPHERE' : 'MODE    ALIGNED', tx + 8, ty + 30);
+  if (mh) {
+    // kept left of the maintenance panel
+    const x = Math.min(tx + 8, W - insets.r - 140 - h.x);
+    bctx.fillStyle = mh.color;
+    bctx.fillText(`READINESS ${mh.status}`, x, ty);
+    bctx.fillStyle = cyan(0.85);
+    bctx.fillText(`HEALTH    ${mh.health == null ? '--' : mh.health + '%'}`, x, ty + 15);
+    bctx.fillText(`DEFECTS   ${mh.defects}`, x, ty + 30);
+  } else {
+    bctx.fillText(`EXPLODE ${String(Math.round(h.explode * 100)).padStart(3, '0')}%`, tx + 8, ty);
+    bctx.fillText(`SCALE   ${h.scale.toFixed(2)}x`, tx + 8, ty + 15);
+    bctx.fillText(h.sphere > 0.5 ? 'MODE    SPHERE' : 'MODE    ALIGNED', tx + 8, ty + 30);
+  }
   bctx.textAlign = 'center';
   bctx.fillText((scene.entry?.def.name || '').toUpperCase(), 0, r * 1.1 + 24);
+  bctx.restore();
+}
+
+const hexA = (hex, a) => {
+  const n = parseInt(String(hex).slice(1), 16) || 0;
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+};
+/** Two rotating arcs around the focused defect (maintenance mode). */
+function drawReticle(f, t) {
+  const r = Math.max(14, f.r) + 18;
+  bctx.save();
+  bctx.translate(f.x, f.y);
+  bctx.lineCap = 'round';
+  bctx.shadowColor = hexA(f.color, 0.8);
+  bctx.shadowBlur = 8;
+  bctx.strokeStyle = hexA(f.color, 0.85);
+  bctx.lineWidth = 2;
+  for (let k = 0; k < 2; k++) {
+    const a = t * 0.9 + k * Math.PI;
+    bctx.beginPath();
+    bctx.arc(0, 0, r, a, a + Math.PI / 3);
+    bctx.stroke();
+  }
+  bctx.strokeStyle = hexA(f.color, 0.25);
+  bctx.lineWidth = 1;
+  bctx.beginPath();
+  bctx.arc(0, 0, r + 8, 0, Math.PI * 2);
+  bctx.stroke();
   bctx.restore();
 }
 
@@ -932,6 +1054,7 @@ function drawBack(t) {
   bctx.clearRect(0, 0, W, H);
   drawSharpHands(perc.hands.filter((h) => !h.held));
   if (ui.holo) drawHud(t);
+  else if (maint.hud()?.focus) drawReticle(maint.hud().focus, t);
 }
 
 /** Word-wrap for canvas text (Korean and English both break at spaces; long words break anywhere). */
@@ -960,7 +1083,7 @@ const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 const SANS = 'ui-sans-serif, system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif';
 /** HUD box with the description of the highlighted part (pointed at / hovered, else selected). */
 function drawCallout() {
-  if (!scene.entry || scene.pending >= 0 || scene.pop < 0.6) return;
+  if (!scene.entry || scene.pending >= 0 || scene.pop < 0.6 || maint.on) return;
   const i = scene.hover >= 0 ? scene.hover : scene.sel;
   const p = scene.parts[i];
   if (!p || !p.visible || !p.desc) return;
@@ -973,10 +1096,11 @@ function drawCallout() {
   const group = groupName(p);
   const boxH = pad + (group ? 16 : 0) + 20 + (p.alt ? 17 : 0) + 8 + lines.length * 18 + pad - 4;
   // to the right of the part, or to the left when there is no room; never under the panel
-  const panelR = W > 900 ? 300 : 250;
+  const panelR = W > 900 ? insets.l : 250;
+  const rightEdge = W - insets.r;
   let x = at.x + 70;
-  if (x + BOX_W > W - 12) x = at.x - 70 - BOX_W;
-  x = clamp(x, panelR, W - BOX_W - 12);
+  if (x + BOX_W > rightEdge - 12) x = at.x - 70 - BOX_W;
+  x = clamp(x, panelR, rightEdge - BOX_W - 12);
   const y = clamp(at.y - boxH / 2, 64, H - boxH - 80);
   const amber = '#ffb547', line = ui.holo ? 'rgba(95, 228, 255, 0.75)' : 'rgba(255,255,255,0.6)';
   ctx.save();
@@ -1047,6 +1171,7 @@ function drawOverlay() {
   ctx.clearRect(0, 0, W, H);
   if (ui.labels) drawLabels();
   drawCallout();
+  maint.draw(ctx, W, H, performance.now() / 1000);
   const live = perc.hands.filter((h) => !h.held);
   if (ui.skeleton) for (const h of live) drawHand(h);
   for (const h of live) drawRing(h);
@@ -1066,6 +1191,7 @@ function frame(now) {
     perc = engine.update(hands, t, mapPoint, (video.videoWidth || 16) / (video.videoHeight || 9));
   }
   control(t, dt);
+  maint.update(t, dt);
 
   if (!draggingExplode) rExplode.value = Math.round(clamp(scene.explode, 0, 1) * 100);
   $('v-explode').textContent = Math.round(clamp(scene.explode, 0, 1) * 100) + '%';

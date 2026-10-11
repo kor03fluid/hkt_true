@@ -265,6 +265,32 @@ for (const key of MODELS) {
   ok(hp.steps.some((s) => s.text.includes('규정 토크 (기술교범 확인)')), 'torque as 규정값');
   const cr = repairPlan({ defect: mk('B-03', 'crack', 'low', 10), parts: PARTS.Turret, kb: kbT, modelKey: 'Turret', seq: 1 });
   ok(cr.steps.some((s) => s.text === '② 균열 끝 정지 홀 가공 (∅1 mm, 예시)'), 'crack repair steps');
+  // work cards name the parts in Korean (KB name), and verify every function touched on the way
+  ok(t2.steps.some((s) => s.text === 'H-01v4 틸트 프레임 분리 (교체 대상)'), 'T2 Korean part name on the work card');
+  ok(t3.verify.includes(kbT.functions.find((f) => f.id === 'vision').check), 'T3 verify includes the vision check (H-08 taken off)');
+  ok(t1.safety.includes('다리 분리 전 본체를 작업대·받침에 고정 (전도·낙하 방지)'), 'T1 body support before removing the legs');
+  ok(t2.safety.some((s) => s.startsWith('피스톤·래치 저장 에너지 해제')), 'T2 stored-energy precaution via H-01v4');
+}
+
+// --- regressions: condemnation is final; the level can come from the report ------------------
+console.log('Regressions');
+{
+  const kbM = KB['hailo-Modern'];
+  const ctx = { modelKey: 'hailo-Modern', seq: 1, planned: 30, kb: kbM };
+  let d = mk('HP-05', 'dent', 'mid', 10);
+  const texts = [];
+  for (let k = 0; k < 3; k++) {
+    const out = applyFeedback(d, { result: 'fail', reason: 'capability' }, ctx);
+    d = out.defect;
+    texts.push(out.log.text);
+  }
+  eq(texts, ['수리 불가 → 창정비 후송', '창정비 수리 불가 — 불용 판정, 대체품 청구', '창정비 수리 불가 — 불용 판정, 대체품 청구'], 'HP-05 dent fail chain ends condemned and stays there');
+  eq(as('hailo-Modern', d).level, 'depot', 'condemned defect stays at depot');
+  const b4 = mk('B-04', 'wear', 'mid', 16);
+  const lvl = as('Turret', b4).level;
+  eq(applyFeedback(b4, { result: 'fail' }, { modelKey: 'Turret', seq: 1, level: lvl }).log.text, '수리 불가 → 창정비 후송', 'level from the report decides the escalation');
+  const noPart = diagnose({ parts: PARTS.Turret, defects: [{ id: 'Z1', type: 'crack', sev: 'high', size: 5 }], kb: KB.Turret });
+  ok(noPart && noPart.counts.open === 0, 'a defect without a part is ignored, not a crash');
 }
 
 // --- summary ---------------------------------------------------------------------------------
