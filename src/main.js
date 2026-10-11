@@ -1004,13 +1004,14 @@ function drawHud(t) {
   bctx.textAlign = 'left';
   const tx = Math.cos(-0.6) * r * 1.22, ty = Math.sin(-0.6) * r * 1.22;
   if (mh) {
-    // kept left of the maintenance panel
+    // kept left of the maintenance panel and below the top bar
     const x = Math.min(tx + 8, W - insets.r - 140 - h.x);
+    const y = clamp(h.y + ty, 76, H - 140) - h.y;
     bctx.fillStyle = mh.color;
-    bctx.fillText(`READINESS ${mh.status}`, x, ty);
+    bctx.fillText(`READINESS ${mh.status}`, x, y);
     bctx.fillStyle = cyan(0.85);
-    bctx.fillText(`HEALTH    ${mh.health == null ? '--' : mh.health + '%'}`, x, ty + 15);
-    bctx.fillText(`DEFECTS   ${mh.defects}`, x, ty + 30);
+    bctx.fillText(`HEALTH    ${mh.health == null ? '--' : mh.health + '%'}`, x, y + 15);
+    bctx.fillText(`DEFECTS   ${mh.defects}`, x, y + 30);
   } else {
     bctx.fillText(`EXPLODE ${String(Math.round(h.explode * 100)).padStart(3, '0')}%`, tx + 8, ty);
     bctx.fillText(`SCALE   ${h.scale.toFixed(2)}x`, tx + 8, ty + 15);

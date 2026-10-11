@@ -1915,6 +1915,8 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     ctx.textBaseline = 'middle';
     for (const s of this._screen()) {
       if (s.reveal <= 0.02) continue;
+      // a defect outside the free area gets no pin (it would pile up at the panel edge)
+      if (s.x < L - 4 || s.x > R + 4 || s.y < -4 || s.y > H + 4) continue;
       const r = this.byId.get(s.id);
       if (!r) continue;
       // badge on a pin: away from the assembly centre, outside the detection ring, never on the defect

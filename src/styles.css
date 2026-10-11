@@ -273,7 +273,7 @@ body.maint #diag.collapsed + #dg-open { display: block; }
 .dg-pill small { font-size: 10.5px; color: var(--muted); }
 .dg-next { display: flex; align-items: center; gap: 8px; flex: none; height: 40px; }
 .dg-steps { list-style: none; display: flex; gap: 3px; flex: none; }
-.dg-steps li { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 10.5px; color: var(--muted); width: 30px; }
+.dg-steps li { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 10.5px; color: var(--muted); width: 34px; white-space: nowrap; letter-spacing: -0.3px; }
 .dg-steps li::before { content: ""; width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.2); box-sizing: border-box; }
 .dg-steps li.done::before { background: #5be38a; border-color: #5be38a; }
 .dg-steps li.cur { color: #e6fcff; font-weight: 600; }
