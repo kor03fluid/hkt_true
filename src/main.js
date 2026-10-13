@@ -728,7 +728,7 @@ addEventListener('keydown', (e) => {
   } else if (k === 'p') scene.resetParts();
   else if (k === 'x') $('b-xray').click();
   else if (k === 'e') $('t-edges').click();
-  else if (k === 'i' && scene.sel >= 0) $('pc-iso').click();
+  else if (k === 'i' && scene.sel >= 0 && !maint.on) $('pc-iso').click();
   else if (k === 'h' && scene.sel >= 0 && !maint.on) setPartVisible(scene.sel, false); // maintenance keeps every part shown
   else if (k === 'escape') select(-1);
   else if (e.key >= '1' && e.key <= '9' && +e.key <= scene.models.length) switchModel(+e.key - 1);

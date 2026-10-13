@@ -264,6 +264,8 @@ export function diagnose({ parts = [], defects = [], kb = null } = {}) {
   const nogoP1 = [], nogoVerify = [], limitedP = [], limitedSupply = [], limitedVerify = [];
   for (const d of open) {
     const a = A[d.id], p = pk[d.part];
+    // 관찰 등록 done: tracked at the next inspection, no readiness impact (P1 can never be put on watch)
+    if (d.monitored && a.action === 'monitor' && a.priority !== 'P1') continue;
     const hasFn = Object.keys(p.functions).length > 0;
     if (a.action === 'replace' && hasFn) contrib.add(d.id);
     if (a.action === 'repair' && Object.values(p.functions).includes('essential')) contrib.add(d.id);
@@ -408,12 +410,15 @@ export function applyFeedback(defect, fb = {}, ctx = {}) {
   const rebase = () => {
     const base = assess({ ...d, escalated: 0 }, kbPart(kb, d.part), d.part, kb).baseLevel;
     const reached = LEVEL_IDS.indexOf(ctx.level || before.level);
-    d.escalated = Math.max(0, reached - LEVEL_IDS.indexOf(base));
+    const wasEscalated = reached > LEVEL_IDS.indexOf(before.baseLevel); // a real referral happened
+    d.escalated = wasEscalated ? Math.max(0, reached - LEVEL_IDS.indexOf(base)) : 0;
   };
   let reason = null, text = '', kind = 'repair';
+  d.monitored = null; // only a fresh 관찰 등록 below marks the defect as monitored
   if (result === 'done' && before.action === 'monitor') {
     // monitoring is not a repair: the defect stays open (deferred) and is tracked at the next inspection
     d.status = 'open';
+    d.wait = null;
     d.monitored = fb.at || new Date().toISOString();
     text = '관찰 등록 — 추적 점검 대상 유지 (다음 정기 점검 시 재측정)';
   } else if (result === 'done') {
@@ -436,6 +441,9 @@ export function applyFeedback(defect, fb = {}, ctx = {}) {
     d.forceMonitor = false;
     rebase();
     text = '교체 전환 — 보수로 회복 불가 판단, 교체로 변경';
+  } else if (result === 'monitor' && defect.condemned) {
+    d.status = 'open';
+    text = '불용 판정 결함 — 관찰 전환 불가 (대체품 청구 유지)';
   } else if (result === 'monitor') {
     d.status = 'open';
     d.forceMonitor = true;
@@ -494,6 +502,7 @@ export function reinspect(defect, { at, pass = true, by = '', simulated = defect
     log.text = simulated ? 'AI 재검사(시뮬레이션·예시): 결함 미검출' : `재검사 합격 — 검사자 ${by || '미기재'} 확인`;
   } else {
     d.status = 'open';
+    d.monitored = null;
     d.rework = num(defect.rework, 0) + 1;
     log.result = 'fail';
     log.text = `재검사 불합격 — 재작업 지시 (${d.rework}회차)`;

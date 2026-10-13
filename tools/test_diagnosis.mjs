@@ -320,6 +320,19 @@ console.log('Regressions');
   // a manual entry marked 결함 아님 is not an AI misread
   ok(!applyFeedback(mk('B-01', 'dent', 'mid', 11), { result: 'false' }, { kb: kbT }).log.text.includes('AI'), 'manual 오탐 text');
   eq(applyFeedback(mk('L-01', 'wear', 'low', 5), { result: 'partial' }, { kb: kbT }).log.text, '부분 수리 — 심각도 경미 유지', 'partial on 경미 copy');
+  // a later decision clears the monitoring flag; monitoring keeps no fake referral; monitored P2 is deferred
+  const rep2 = applyFeedback(mon.defect, { result: 'replace' }, { modelKey: 'hailo-Legacy', seq: 2, kb: leg }).defect;
+  ok(!rep2.monitored && as('hailo-Legacy', rep2).action === 'replace', '교체 전환 after 관찰 등록 clears monitored');
+  const t4 = runtimeDefect(DEFECTS.Turret.find((x) => x.id === 'T4'), 'sample');
+  const t4p = applyFeedback(t4, { result: 'partial' }, { modelKey: 'Turret', seq: 1, kb: kbT }).defect;
+  eq(t4p.escalated, 0, 'partial repair without a referral adds no escalation');
+  const helm = mk('DH-01', 'crack', 'mid', 10);
+  eq(run('hailo-Modern', [helm]).readiness.status, 'LIMITED', 'helmet crack 주의 (monitor, P2) limits operation');
+  const helmMon = applyFeedback(helm, { result: 'done' }, { modelKey: 'hailo-Modern', seq: 1, kb: KB['hailo-Modern'] }).defect;
+  eq(run('hailo-Modern', [helmMon]).readiness.status, 'GO', '관찰 등록 defers a P2 monitor defect');
+  const cond = { ...mk('B-04', 'wear', 'mid', 16), condemned: true, wait: 'supply' };
+  const cm = applyFeedback(cond, { result: 'monitor' }, { modelKey: 'Turret', seq: 1, kb: kbT });
+  ok(!cm.defect.forceMonitor && cm.defect.wait === 'supply' && cm.log.text.includes('관찰 전환 불가'), 'condemned defect cannot be switched to monitoring');
   // readiness names the repaired defects that hold NO-GO
   const t1r = sample('Turret').map((x) => (x.id === 'T1' ? { ...x, status: 'repaired' } : x));
   ok(run('Turret', t1r).readiness.holds.includes('T1'), 'readiness.holds lists repaired P1 on crit-3');

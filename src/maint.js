@@ -25,10 +25,12 @@ const STEP_TIME = { remove: 2.2, install: 2.2, work: 3.5, verify: 3.5 }; // s pe
 const KIND = { repair: '정비', fp: '오탐', inspect: '재검사', reinspect: '재검사', add: '등록', import: '불러오기', remove: '삭제' };
 const FIELDS = ['status', 'sev', 'origSev', 'size', 'escalated', 'wait', 'rework', 'condemned', 'fp', 'memo', 'monitored', 'forceReplace', 'forceMonitor']; // persisted per id
 /** Result choices for an open defect (labels follow the planned action and the source). */
-function resultsFor(r, action) {
-  const out = [['done', action === 'monitor' ? '관찰 등록' : '완료'], ['partial', '부분 수리'], ['fail', '수리 불가']];
-  if (action !== 'replace') out.push(['replace', '교체 전환']);
-  if (action !== 'monitor') out.push(['monitor', '관찰 전환']);
+function resultsFor(r, action, priority) {
+  const out = [['done', action === 'monitor' ? '관찰 등록' : '완료']];
+  if (!r.condemned) out.push(['partial', '부분 수리']); // a condemned part is only ever replaced
+  out.push(['fail', '수리 불가']);
+  if (action !== 'replace' && !r.condemned) out.push(['replace', '교체 전환']);
+  if (action !== 'monitor' && !r.condemned && priority !== 'P1') out.push(['monitor', '관찰 전환']); // P1 is never deferred
   out.push(['false', r.source === 'manual' ? '등록 취소(결함 아님)' : '오탐(결함 아님)']);
   return out;
 }
@@ -206,7 +208,8 @@ export class Maint {
     if (on) {
       this.saved = { explode: sc.explodeTarget, scale: sc.scaleTarget, index: sc.index };
       sc.explodeTarget = 0;
-      sc.parts.forEach((p) => !p.visible && this.setPartVisible(p.i, true));
+      sc.isolate = false;
+      this._showAll();
       this._gestCopy(true);
       this.relayout();
       if (sc.entry) sc.scaleTarget = sc.fitScale(0.7);
@@ -260,6 +263,10 @@ export class Maint {
     this.readyShown = false;
     this.lastReady = null;
     this.scan = this.on ? 'pending' : 'idle';
+    if (this.on) {
+      this.scene.isolate = false;
+      this._showAll();
+    }
     this._recompute();
     if (this.on) {
       this.scene.scaleTarget = this.scene.fitScale(0.7);
@@ -362,11 +369,10 @@ export class Maint {
       return true;
     }
     if (e.key === 'Enter') {
-      // a focused control of the panel or a floating form keeps its own Enter; any other focus (a start
-      // card or chip button clicked earlier) must not be re-clicked by the browser
-      if (e.target.closest?.('#diag button, #diag a, #diag summary, .mt-float button')) return false;
+      // a keyboard-focused control keeps its own Enter
+      // (mouse-clicked buttons are blurred by main.js, so only a keyboard-focused control lands here)
+      if (e.target.closest?.('button, a, summary')) return false;
       e.preventDefault();
-      e.target.blur?.();
       this.cta();
       return true;
     }
@@ -672,6 +678,11 @@ export class Maint {
         def, index, key: def.key,
         report: def === this.def ? this.report : this._diagnose(this._partsFor(def), this._rowsFor(def.key), this._kb(def.key)),
       }));
+    // work left per equipment (open defects not merely under monitoring, plus repaired ones awaiting inspection)
+    for (const f of this.fleet) {
+      const rows = f.def === this.def ? this.rows : this._rowsFor(f.key);
+      f.todo = rows.filter((r) => r.status === 'repaired' || (r.status === 'open' && !(r.monitored && f.report.defects[r.id]?.action === 'monitor'))).length;
+    }
     if (this.selId && !this.byId.has(this.selId)) {
       this.selId = null;
       this.scene.defectSel = null;
@@ -741,9 +752,9 @@ export class Maint {
   /** First unresolved defect in report order after `fromId` (open ones come first), or null. */
   _nextOpen(fromId) {
     const ids = this.report?.order || [];
-    const open = ids.filter((id) => id !== fromId && this.byId.get(id) && this.byId.get(id).status !== 'closed');
-    const todo = open.filter((id) => !this.byId.get(id).monitored);
-    return todo.length ? this.byId.get(todo[0]) : open.length ? this.byId.get(open[0]) : null;
+    // defects still needing work (open, or repaired awaiting inspection); monitored ones wait for the next inspection
+    const todo = ids.filter((id) => id !== fromId && this.byId.get(id) && this.byId.get(id).status !== 'closed' && !this._watched(this.byId.get(id)));
+    return todo.length ? this.byId.get(todo[0]) : null;
   }
   /** Next equipment of the fleet to look at: the next one with unresolved defects, else simply the next. */
   _nextEquipment() {
@@ -751,7 +762,7 @@ export class Maint {
     if (f.length < 2) return null;
     const k = f.findIndex((x) => x.def === this.def);
     const order = k < 0 ? f : [...f.slice(k + 1), ...f.slice(0, k)]; // a dropped model: every fleet member
-    return order.find((x) => x.report.counts.open + x.report.counts.repaired > 0) || order[0];
+    return order.find((x) => x.todo > 0) || order[0];
   }
 
   /** Writes a defect state change (+ log) and recomputes everything. */
@@ -832,11 +843,7 @@ export class Maint {
     if (this.scan !== 'done' || !this.readyShown) return { label: 'AI 판독 결과 표시', disabled: !this._started() || this.flipAt > 0, run: () => this._startScan('full') };
     const r = this.byId.get(this.selId);
     const T = (x) => TYPES[x.type]?.ko || x.type;
-    if (r && r.status === 'open') {
-      if (r.monitored && !this.formOpen) {
-        const nx = this._nextOpen(r.id);
-        if (nx && !nx.monitored) return { label: `다음 결함 · ${nx.id} ${T(nx)}`, run: () => this.selectDefect(nx.id) };
-      }
+    if (r && r.status === 'open' && !(this._watched(r) && !this.formOpen)) {
       if (this.tab !== 'repair') return { label: '수리 절차 보기', run: () => this._proceed(r.id) };
       const plan = this._getPlan();
       if (this.formOpen) return { label: '결과 입력 후 등록 ↓', run: () => this._openForm() };
@@ -855,6 +862,7 @@ export class Maint {
     }
     const next = this._nextOpen(r?.id ?? null);
     if (next) return { label: `${r ? '다음 결함' : '최우선 결함 보기'} · ${next.id} ${T(next)}`, run: () => this.selectDefect(next.id) };
+    if (this.fleet.find((f) => f.def === this.def)?.todo === 0 && this.fleet.every((f) => f.todo === 0)) return { label: '점검할 결함 없음', disabled: true };
     const eq = this._nextEquipment();
     if (eq) {
       return {
@@ -1002,6 +1010,10 @@ export class Maint {
     this._renderNext();
   }
 
+  /** Maintenance shows every part (defects on a hidden part could not be seen or focused). */
+  _showAll() {
+    this.scene.parts.forEach((p) => !p.visible && this.setPartVisible(p.i, true));
+  }
   _resetForm() {
     this.formOpen = false;
     Object.assign(this.form, { result: 'done', reason: 'capability', memo: '', measured: '', minutes: null });
@@ -1015,6 +1027,7 @@ export class Maint {
       btn?.scrollIntoView({ block: 'nearest' });
       btn?.classList.add('air-hot');
       setTimeout(() => btn?.classList.remove('air-hot'), 900);
+      this._markSteps();
       return;
     }
     this.formOpen = true;
@@ -1368,6 +1381,10 @@ export class Maint {
   _holds(id) {
     return !!this.report?.readiness.holds?.includes(id);
   }
+  /** 관찰 등록 done and still a monitor job: handled for the guided flow (tracked at the next inspection). */
+  _watched(r) {
+    return !!r && r.status === 'open' && !!r.monitored && this.report?.defects[r.id]?.action === 'monitor';
+  }
   _statusKo(r) {
     return r.fp ? '오탐' : STATUS[r.status]?.ko || r.status;
   }
@@ -1504,7 +1521,8 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     this.$body.addEventListener('mouseover', (e) => this._netHover(e.target));
     this.$body.addEventListener('mouseleave', () => this._netHover(null));
     // buttons hand the keyboard back to the page, so M / N / Enter keep working after a click
-    this.$diag.addEventListener('click', (e) => e.target.closest?.('button, summary, input[type="checkbox"], input[type="radio"]')?.blur());
+    // (radios keep the focus: arrow keys move inside the group instead of switching the equipment)
+    this.$diag.addEventListener('click', (e) => e.target.closest?.('button, summary, input[type="checkbox"]')?.blur());
     // any pointer input pauses the procedure playback (except the play button itself)
     addEventListener('pointerdown', (e) => {
       if (this.on && !e.target.closest?.('[data-act="play"]')) this.noteInput();
@@ -1634,7 +1652,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     if (escl) chips.push(chip(escl, 'warn'));
     if (r.condemned) chips.push(chip('불용 판정', 'col', SEVERITY.high.color));
     if (r.wait === 'supply' && !closed) chips.push(chip('보급 대기', 'warn'));
-    if (r.monitored && !closed) chips.push(chip('관찰 등록', 'col', SEVERITY.low.color));
+    if (this._watched(r)) chips.push(chip('관찰 등록', 'col', SEVERITY.low.color));
     if (this._repeat(r)) chips.push(chip('반복 결함', 'warn'));
     const badge = closed ? GREEN : r.status === 'repaired' ? BLUE : S.color;
     const pop = this.popAt.has(r.id) && this.now - this.popAt.get(r.id) < 0.6 ? ' pop' : '';
@@ -1793,8 +1811,8 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     return `<div class="mt-form${this.formOpen ? ' open' : ''}" data-res="${esc(f.result)}">
       <button class="mt-form-bar" data-act="form" data-air>정비 결과 등록 <span>${this.formOpen ? '▾' : '▴'}</span></button>
       <div class="mt-form-body">
-        ${r.monitored ? `<p class="mt-mon">관찰 등록됨 (${esc(stamp(r.monitored))}) — 다음 정기 점검 때 다시 측정합니다</p>` : ''}
-        <div class="mt-radios">${resultsFor(r, plan.action).map(([v, l]) => `<label data-air><input type="radio" name="mt-res" value="${v}"${f.result === v ? ' checked' : ''} />${l}</label>`).join('')}</div>
+        ${this._watched(r) ? `<p class="mt-mon">관찰 등록됨 (${esc(stamp(r.monitored))}) — 다음 정기 점검 때 다시 측정합니다</p>` : ''}
+        <div class="mt-radios">${resultsFor(r, plan.action, plan.priority).map(([v, l]) => `<label data-air><input type="radio" name="mt-res" value="${v}"${f.result === v ? ' checked' : ''} />${l}</label>`).join('')}</div>
         <div class="mt-grid">
           <label class="f-fail">사유<select data-f="reason"><option value="capability"${f.reason !== 'supply' ? ' selected' : ''}>능력 부족 → 상급 정비 의뢰</option><option value="supply"${f.reason === 'supply' ? ' selected' : ''}>부품 없음 → 보급 대기</option></select></label>
           <label class="f-partial">잔여 크기 (mm)<input type="number" data-f="measured" min="0" step="0.1" value="${esc(f.measured)}" placeholder="${mm(r.size)}" /></label>
