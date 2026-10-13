@@ -7,11 +7,13 @@ import {
   TYPES, SEVERITY, riskOf, assess, diagnose, repairPlan, applyFeedback, reinspect, accessOrder, workOrder,
   runtimeDefect,
 } from '../src/diagnosis.js';
+import { liveSignals, reconcile, nodesOf, DEFAULT_MAP, RULES } from '../src/squad.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const readJson = (p) => JSON.parse(fs.readFileSync(path.join(root, p), 'utf8'));
 const KB = readJson('web/maintenance.json');
 const DEFECTS = readJson('web/defects.json');
+const ANCHORS = readJson('web/live_anchors.json');
 const MODELS = ['Turret', 'hailo-Modern', 'hailo-Legacy'];
 const PARTS = Object.fromEntries(MODELS.map((k) => [k, readJson(`web/models/${k}.json`).parts
   .map((p) => ({ code: p.code, name: p.name, group: p.group }))]));
@@ -338,6 +340,123 @@ console.log('Regressions');
   ok(run('Turret', t1r).readiness.holds.includes('T1'), 'readiness.holds lists repaired P1 on crit-3');
   const noPart = diagnose({ parts: PARTS.Turret, defects: [{ id: 'Z1', type: 'crack', sev: 'high', size: 5 }], kb: KB.Turret });
   ok(noPart && noPart.counts.open === 0, 'a defect without a part is ignored, not a crash');
+}
+
+// --- SQUAD LINK live link (src/squad.js) -------------------------------------------------------
+console.log('SQUAD LINK');
+{
+  // anchors: real parts, every rule has a spot on the equipment its node class maps to by default
+  for (const [key, list] of Object.entries(ANCHORS)) {
+    if (key.startsWith('_')) continue;
+    const codes = PARTS[key].map((p) => p.code);
+    for (const a of list) {
+      ok(RULES[a.id], `${key}: anchor ${a.id} is a rule kind`);
+      ok(codes.includes(a.part) && KB[key].parts[a.part], `${key}: anchor ${a.id} part ${a.part} in manifest and KB`);
+      ok(Array.isArray(a.p) && a.p.length === 3 && Array.isArray(a.n) && Math.abs(Math.hypot(...a.n) - 1) < 1e-3, `${key}: anchor ${a.id} has p and a unit n`);
+    }
+  }
+  for (const [node, model] of Object.entries(DEFAULT_MAP)) {
+    const cls = node.startsWith('env') ? 'env' : 'soldier';
+    for (const kind of Object.keys(RULES).filter((k) => RULES[k].node === cls)) ok((ANCHORS[model] || []).some((a) => a.id === kind), `default ${node} -> ${model} has a '${kind}' anchor`);
+  }
+  for (const kind of Object.keys(RULES)) ok(TYPES[RULES[kind].type]?.signal && SEVERITY[RULES[kind].sev], `rule ${kind} uses a signal type and a severity`);
+
+  const T0 = '2026-10-13T04:05:06.000Z';
+  const sensors = (over = {}) => ({ heart_rate: 'ok', imu: 'ok', body_temperature: 'not_implemented', gps: 'disabled', ...over });
+  const soldier = (node, state, over = {}, stale = false) => ({ soldier_id: 's', assigned_node_id: node, source: 'simulation', connection_state: state, last_seen_at: T0, data_stale: stale, payload: { mode: 'normal', heart_rate_bpm: 80, heart_rate_quality: 'good', motion_state: 'moving', heartbeat_interval_ms: 5000, body_temperature_c: null, sensor_status: sensors(over) } });
+  const env = (payload, stale = false) => ({ node_id: 'env_01', packet_type: 'environment', source: 'simulation', payload: { heartbeat_interval_ms: 30000, air_temperature_c: 24, humidity_pct: 40, light_raw: 900, sensor_status: { dht11: 'ok', light: 'ok', shock: 'ok' }, shock_detected: false, ...payload }, received_at: T0, age_ms: 10, data_stale: stale });
+  const ev = (id, node, type, state = 'open') => ({ event_id: id, node_id: node, event_type: type, source: 'simulation', event_state: state, first_received_at: T0, repeat_count: 1 });
+  const snap = (soldiers, events = [], telemetry = []) => ({ schema_version: '1.0', revision: 1, server_time: T0, source: 'simulation', soldiers, events, telemetry });
+
+  const s1 = snap(
+    [soldier('halo_01', 'connected', { imu: 'unavailable' }), soldier('halo_02', 'lost'), { soldier_id: 's3', assigned_node_id: null, connection_state: 'unassigned', payload: null }],
+    [ev('halo_02:b:impact:1', 'halo_02', 'impact'), ev('halo_01:b:sos:1', 'halo_01', 'sos'), ev('link_lost:halo_02:u', 'halo_02', 'link_lost')],
+    [env({ shock_detected: true, air_temperature_c: 36.2 })],
+  );
+  const L1 = liveSignals(s1, DEFAULT_MAP, []);
+  eq(L1.signals.map((x) => `${x.kind}:${x.node}>${x.model}`).sort(), ['fault:halo_01>hailo-Modern', 'heat:env_01>Turret', 'impact:halo_02>hailo-Legacy', 'link:halo_02>hailo-Legacy', 'shock:env_01>Turret'], 'signals of a snapshot (sos / link events are not maintenance signals)');
+  eq(L1.restored, ['halo_01'], 'restored = connected soldier nodes');
+  ok(L1.signals.every((x) => x.sim), 'simulation source is flagged on every signal');
+  ok(L1.signals.find((x) => x.kind === 'fault').text.includes('IMU'), 'sensor signal names the failed sensor');
+  ok(L1.signals.find((x) => x.kind === 'impact').text.includes('손상 확정 아님'), 'impact text says it is not confirmed damage');
+  eq(liveSignals(s1, { halo_01: '', halo_02: 'hailo-Legacy' }, []).signals.map((x) => x.kind).sort(), ['impact', 'link'], 'unmapped nodes raise nothing');
+  eq(liveSignals(snap([soldier('halo_01', 'connected', { imu: 'unavailable' }, true)]), DEFAULT_MAP).signals.length, 0, 'stale sensor status is ignored');
+  eq(liveSignals(snap([soldier('halo_01', 'lost', { imu: 'unavailable' })]), DEFAULT_MAP).signals.map((x) => x.kind), ['link'], 'a lost node reports only the link');
+  eq(liveSignals(snap([], [], [env({ air_temperature_c: 34.5 })]), DEFAULT_MAP, []).signals.length, 0, 'heat below 35 °C: no episode');
+  eq(liveSignals(snap([], [], [env({ air_temperature_c: 34.5 })]), DEFAULT_MAP, ['cond:heat:env_01']).signals.map((x) => x.kind), ['heat'], 'heat episode holds until 34 °C (hysteresis)');
+  eq(liveSignals(snap([], [], [env({ shock_detected: true }, true)]), DEFAULT_MAP).signals.length, 0, 'stale environment telemetry is ignored');
+  eq(nodesOf(s1, { squad: { node_ids: ['halo_01', 'halo_02'] }, environment: { node_ids: ['env_01', 'env_02'] } }), { soldiers: ['halo_01', 'halo_02'], env: ['env_01', 'env_02'] }, 'nodesOf merges config and snapshot');
+
+  // reconcile: rows from signals, then repeats / episodes / auto-clear
+  const R1 = reconcile({ signals: L1.signals, restored: L1.restored, seen: [], rows: {}, anchors: ANCHORS, at: T0 });
+  eq(R1.add.map((x) => `${x.model}:${x.row.part}:${x.row.type}:${x.row.sev}`).sort(), ['Turret:B-02:fault:low', 'Turret:L-01:impact:mid', 'hailo-Legacy:HP-01L:fault:low', 'hailo-Legacy:HP-01L:impact:mid', 'hailo-Modern:HP-01L:fault:mid'], 'rows created on the anchored parts');
+  ok(R1.add.every((x) => x.row.source === 'live' && x.row.live.sim && x.row.conf === null && x.row.cause), 'live rows: source live, simulation flag, no AI confidence, a cause');
+  eq(R1.add.filter((x) => x.row.confirm).map((x) => x.sig.kind).sort(), ['fault', 'impact', 'shock'], 'impact / sensor rows start with a hands-on check');
+  eq([...R1.seen].sort(), ['cond:fault:halo_01', 'cond:heat:env_01', 'cond:link:halo_02', 'cond:shock:env_01', 'ev:halo_02:b:impact:1'], 'seen keys');
+  // give the rows ids, as the viewer does
+  let n = 0;
+  const rowsOf = (adds, status = {}) => {
+    const out = {};
+    for (const { model, row } of adds) (out[model] ||= []).push({ ...row, id: row.id || `S${++n}`, status: status[row.live.kind] || row.status });
+    return out;
+  };
+  const rows1 = rowsOf(R1.add);
+  const again = reconcile({ signals: L1.signals, restored: L1.restored, seen: R1.seen, rows: rows1, anchors: ANCHORS, at: T0 });
+  eq([again.add.length, again.bump.length, again.clear.length], [0, 0, 0], 'the same snapshot again changes nothing');
+  // halo_02 back: the link episode ends and its open row clears; a new impact bumps the open impact row
+  const s2 = snap([soldier('halo_01', 'connected', { imu: 'unavailable' }), soldier('halo_02', 'connected')], [...s1.events, ev('halo_02:b:impact:2', 'halo_02', 'impact')], s1.telemetry);
+  const L2 = liveSignals(s2, DEFAULT_MAP, R1.seen.filter((k) => k.startsWith('cond:')));
+  const R2 = reconcile({ signals: L2.signals, restored: L2.restored, seen: R1.seen, rows: rows1, anchors: ANCHORS, at: T0 });
+  const linkRow = rows1['hailo-Legacy'].find((r) => r.live.kind === 'link');
+  const impRow = rows1['hailo-Legacy'].find((r) => r.live.kind === 'impact');
+  eq(R2.clear.map((x) => x.id), [linkRow.id], 'link restored clears the open link row');
+  eq(R2.bump.map((x) => x.id), [impRow.id], 'a second impact counts on the open impact row');
+  eq(R2.add.length, 0, 'no second marker for a repeat');
+  ok(!R2.seen.includes('cond:link:halo_02'), 'ended episode is forgotten');
+  // a cleared link row stays closed; a new loss is a new row
+  const rows2 = { ...rows1, 'hailo-Legacy': rows1['hailo-Legacy'].map((r) => (r.id === linkRow.id ? { ...r, status: 'closed', fp: true } : r)) };
+  const R3 = reconcile({ signals: L1.signals, restored: L1.restored, seen: R2.seen, rows: rows2, anchors: ANCHORS, at: T0 });
+  eq(R3.add.map((x) => x.sig.kind), ['link'], 'a new loss after recovery opens a new link row');
+  // the sensor row does not clear by itself (an intermittent sensor still needs a check), its next episode counts on it
+  const s4 = snap([soldier('halo_01', 'connected'), soldier('halo_02', 'connected')], s2.events, s1.telemetry);
+  const L4 = liveSignals(s4, DEFAULT_MAP, R2.seen.filter((k) => k.startsWith('cond:')));
+  const R4 = reconcile({ signals: L4.signals, restored: L4.restored, seen: R2.seen, rows: rows1, anchors: ANCHORS, at: T0 });
+  eq([R4.clear.length, R4.seen.includes('cond:fault:halo_01')], [0, false], 'sensor recovery ends the episode without closing the row');
+  const R5 = reconcile({ signals: L1.signals, restored: L1.restored, seen: R4.seen, rows: rows1, anchors: ANCHORS, at: T0 });
+  ok(R5.bump.some((x) => x.sig.kind === 'fault'), 'the next sensor failure counts on the open sensor row');
+  // a closed impact row: the next impact is a new row; equipment without the anchor is skipped and retried
+  const rows6 = { ...rows1, 'hailo-Legacy': rows1['hailo-Legacy'].map((r) => (r.live.kind === 'impact' ? { ...r, status: 'closed' } : r)) };
+  const R6 = reconcile({ signals: [{ key: 'ev:x3', kind: 'impact', node: 'halo_02', model: 'hailo-Legacy', at: T0, sim: false, cond: false, text: 't' }], seen: R2.seen, rows: rows6, anchors: ANCHORS, at: T0 });
+  eq(R6.add.length, 1, 'impact after the previous one was closed: new row');
+  const R7 = reconcile({ signals: [{ key: 'ev:x4', kind: 'impact', node: 'halo_02', model: 'Turret-X', at: T0, cond: false, text: 't' }], seen: [], rows: {}, anchors: ANCHORS, at: T0 });
+  eq([R7.add.length, R7.seen.length], [0, 0], 'no anchor on that equipment: nothing, retried later');
+  const many = Array.from({ length: 320 }, (_, i) => `ev:old${i}`);
+  ok(reconcile({ signals: [], seen: [...many, 'cond:heat:env_01'], rows: {}, anchors: ANCHORS }).seen.length <= 301, 'seen keeps at most 300 event keys');
+
+  // engine on live rows
+  const live = (model, kind, extra = {}) => ({ ...R1.add.find((x) => x.model === model && x.sig.kind === kind).row, id: `S-${kind}`, ...extra });
+  const imp = live('hailo-Legacy', 'impact');
+  const ai = as('hailo-Legacy', imp);
+  eq([ai.priority, ai.action, ai.level, ai.needsConfirm], ['P2', 'repair', 'unit', true], 'impact on HP-01L: P2 inspection at unit level, confirm first');
+  eq(run('hailo-Legacy', [...sample('hailo-Legacy'), imp]).readiness.status, 'LIMITED', 'an impact on the Legacy pod limits operation until inspected');
+  const lnk = live('hailo-Legacy', 'link');
+  const lr = run('hailo-Legacy', [...sample('hailo-Legacy'), lnk]);
+  eq([as('hailo-Legacy', lnk).action, lr.readiness.status, lr.readiness.deferred.includes(lnk.id)], ['monitor', 'GO', true], 'a lost link is watched, not a NO-GO (state unknown)');
+  const flt = live('hailo-Modern', 'fault');
+  eq([as('hailo-Modern', flt).action, as('hailo-Modern', flt).level, run('hailo-Modern', [flt]).readiness.status], ['repair', 'field', 'LIMITED'], 'sensor failure: electronics repair at field level, limited');
+  const shk = live('Turret', 'shock');
+  eq([as('Turret', shk).priority, as('Turret', shk).action], ['P2', 'repair'], 'installation shock on the legs: P2 inspection');
+  const pi = repairPlan({ defect: imp, parts: PARTS['hailo-Legacy'], kb: KB['hailo-Legacy'], modelKey: 'hailo-Legacy', seq: 1 });
+  ok(pi.steps.some((x) => x.kind === 'prep' && x.text.includes('손상 확정 아님')), 'impact plan starts with a hands-on check');
+  ok(pi.steps.some((x) => x.kind === 'work' && x.text.includes('균열')) && !pi.steps.some((x) => /신뢰도/.test(x.text)), 'impact plan inspects, never quotes an AI confidence');
+  const pl = repairPlan({ defect: lnk, parts: PARTS['hailo-Legacy'], kb: KB['hailo-Legacy'], modelKey: 'hailo-Legacy', seq: 1 });
+  ok(pl.steps.some((x) => x.text.includes('신호 상태 기록')) && !pl.steps.some((x) => x.text.includes('크기 20%')), 'monitored signal uses the signal monitoring steps');
+  for (const pp of [pi, pl, repairPlan({ defect: flt, parts: PARTS['hailo-Modern'], kb: KB['hailo-Modern'], modelKey: 'hailo-Modern', seq: 1 })]) pp.steps.forEach((x) => banned(x.text, `live plan ${pp.wo}`));
+  const fb = applyFeedback(imp, { result: 'false' }, { modelKey: 'hailo-Legacy', seq: 1, kb: KB['hailo-Legacy'] });
+  eq([fb.defect.status, fb.defect.fp, fb.log.kind], ['closed', true, 'clear'], 'live "이상 없음" closes the row as a cleared signal');
+  ok(fb.log.text.includes('이상 없음') && !fb.log.text.includes('AI'), 'clear text does not blame the AI');
+  eq(run('hailo-Legacy', [fb.defect]).counts.fp, 0, 'a cleared signal is not counted as an AI misread');
+  eq(reinspect({ ...imp, status: 'repaired' }, { simulated: true }).log.result, 'skip', 'simulated re-inspection never closes a live row');
 }
 
 // --- summary ---------------------------------------------------------------------------------

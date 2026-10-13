@@ -7,31 +7,38 @@
 // main.js keeps the input routing and calls the hooks (onKey, click, hover, pointBadge, airPoint, pointEnd,
 // cta, release, noteInput, update, draw, hud); the 3D side is scene.js (setMaint, setDefects, focusDefect...).
 // Sample defects, confidences and the knowledge base are demonstration data and are labelled as such.
+// SQUAD LINK (squad.js) adds live inspection rows (source 'live') from the team's control server when a
+// bridge serves the read-only API next to the page; a signal says where to look and never closes a defect.
 import SAMPLE from '/web/defects.json';
 import KB from '/web/maintenance.json';
+import ANCHORS from '/web/live_anchors.json';
 import {
   TYPES, SEVERITY, SOURCES, STATUS, ACTIONS, PRIORITY, LEVELS, PART_STATUS, FUNC_STATUS, READINESS, STEP_KINDS, NOTICE,
   diagnose, repairPlan, applyFeedback, reinspect, assess,
 } from './diagnosis.js';
 import { clamp } from './utils.js';
+import { SquadLink, liveSignals, reconcile, nodesOf, DEFAULT_MAP, RULES } from './squad.js';
 
 const STORE = 'holohand-maint-v1';
 const STORE_BY = 'holohand-maint-by';
+const STORE_SQUAD = 'holohand-squad-v1'; // { map: { node: model key | '' }, seen: [signal keys] }
+const BRIDGE = 'http://localhost:8095/squad/api/'; // tools/squad_bridge.mjs default, tried when the user asks
 const GREEN = '#5be38a', BLUE = '#7fb2ff', ACCENT = '#bff6ff', GREY = '#8f95aa';
 const RD_EN = { GO: 'GO', LIMITED: 'LIMITED', NOGO: 'NO-GO' };
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 const SANS = 'ui-sans-serif, system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif';
 const STEP_TIME = { remove: 2.2, install: 2.2, work: 3.5, verify: 3.5 }; // s per step while the procedure plays (else 3)
-const KIND = { repair: '정비', fp: '오탐', inspect: '재검사', reinspect: '재검사', add: '등록', import: '불러오기', remove: '삭제' };
+const KIND = { repair: '정비', fp: '오탐', inspect: '재검사', reinspect: '재검사', add: '등록', import: '불러오기', remove: '삭제', live: '실시간', clear: '이상 없음' };
 const FIELDS = ['status', 'sev', 'origSev', 'size', 'escalated', 'wait', 'rework', 'condemned', 'fp', 'memo', 'monitored', 'forceReplace', 'forceMonitor']; // persisted per id
 /** Result choices for an open defect (labels follow the planned action and the source). */
 function resultsFor(r, action, priority) {
   const out = [['done', action === 'monitor' ? '관찰 등록' : '완료']];
-  if (!r.condemned) out.push(['partial', '부분 수리']); // a condemned part is only ever replaced
+  // a condemned part is only ever replaced; a signal row has no size to reduce
+  if (!r.condemned && !TYPES[r.type]?.signal) out.push(['partial', '부분 수리']);
   out.push(['fail', '수리 불가']);
   if (action !== 'replace' && !r.condemned) out.push(['replace', '교체 전환']);
   if (action !== 'monitor' && !r.condemned && priority !== 'P1') out.push(['monitor', '관찰 전환']); // P1 is never deferred
-  out.push(['false', r.source === 'manual' ? '등록 취소(결함 아님)' : '오탐(결함 아님)']);
+  out.push(['false', r.source === 'manual' ? '등록 취소(결함 아님)' : r.source === 'live' ? '이상 없음(점검 종료)' : '오탐(결함 아님)']);
   return out;
 }
 /** Storage key of a model: repo models by file, dropped ones by name + their part list. */
@@ -183,6 +190,10 @@ export class Maint {
     this.air = { el: null, t: 0, fired: false, x: 0, y: 0 };
     this.frame = 0;
     this.now = nowS();
+    this.squad = this._loadSquad();
+    this.liveTry = [];
+    this.liveMapOpen = false;
+    this.link = new SquadLink({ onState: (snap) => this._onSquad(snap), onStatus: (st) => this._onLinkStatus(st) });
     this._dom();
     this.scene.onReveal = (id) => this._onReveal(id);
     this.scene.onScanEnd = () => this._onScanEnd();
@@ -221,7 +232,10 @@ export class Maint {
       this.firstEntry = false;
       this._recompute();
       this._render(true);
+      this._liveConnect(false);
     } else {
+      this.link.stop();
+      this.liveTry = [];
       this._stopPlay();
       this._closeFloat();
       this._setAdd(false);
@@ -286,6 +300,7 @@ export class Maint {
     this.frame++;
     this.now = nowS();
     if (!this.on) return;
+    this.link.tick();
     const sc = this.scene, now = this.now;
     // the AI scan starts once the model has popped in and the start card is gone
     if (this.scan === 'pending' && this.report && sc.entry?.def === this.def && sc.pending < 0 && sc.pop >= 0.95 && this._started()) this._startScan('full');
@@ -777,6 +792,175 @@ export class Maint {
     this._recompute();
   }
 
+  // ------------------------------------------------------------------ SQUAD LINK (live link, read-only)
+  _loadSquad() {
+    let v = null;
+    try {
+      v = JSON.parse(localStorage.getItem(STORE_SQUAD) || 'null');
+    } catch {
+      v = null;
+    }
+    const map = v && v.map && typeof v.map === 'object' && !Array.isArray(v.map) ? { ...DEFAULT_MAP, ...v.map } : { ...DEFAULT_MAP };
+    return { map, seen: Array.isArray(v?.seen) ? v.seen.filter((k) => typeof k === 'string') : [] };
+  }
+  _saveSquad() {
+    try {
+      localStorage.setItem(STORE_SQUAD, JSON.stringify(this.squad));
+    } catch {
+      /* ignore */
+    }
+  }
+  /** Same-origin bridge path first (squad_bridge.mjs / Vite proxy); when the user asks, also the default local bridge. */
+  _liveConnect(user) {
+    let here = false;
+    try {
+      here = location.origin === new URL(BRIDGE).origin;
+    } catch {
+      /* file:// */
+    }
+    this.liveTry = user && !here ? [BRIDGE] : [];
+    this.liveUser = !!user;
+    this.link.start('squad/api/');
+  }
+  _onLinkStatus(st) {
+    if (st === 'unavailable' && this.liveTry.length) {
+      this.link.start(this.liveTry.shift());
+      return;
+    }
+    if (st === 'lost') this.toast('SQUAD LINK 연결 끊김 — 재연결 중', 2600);
+    else if (st === 'live' && this.liveWas === 'lost') this.toast('SQUAD LINK 다시 연결됨', 2200);
+    else if (st === 'unavailable' && this.liveUser) this.toast('SQUAD LINK 중계 서버를 찾지 못했습니다 (tools/squad_bridge.mjs)', 3200);
+    if (st === 'live' || st === 'unavailable') this.liveUser = false;
+    this.liveWas = st;
+    this._renderLive();
+    this._renderFleet();
+  }
+  /** A control-server snapshot: signals -> inspection rows of the mapped equipment (only when something changed). */
+  _onSquad(snap) {
+    const map = this.squad.map;
+    let res;
+    try {
+      const { signals, restored } = liveSignals(snap, map, this.squad.seen.filter((k) => k.startsWith('cond:')));
+      const rows = {};
+      for (const key of new Set(Object.values(map).filter(Boolean))) rows[key] = this._rowsFor(key);
+      res = reconcile({ signals, restored, seen: this.squad.seen, rows, anchors: ANCHORS, at: new Date().toISOString() });
+    } catch (e) {
+      console.error('SQUAD LINK reconcile failed', e);
+      return;
+    }
+    const old = this.squad.seen;
+    if (res.seen.length !== old.length || res.seen.some((k, i) => k !== old[i])) {
+      this.squad.seen = res.seen;
+      this._saveSquad();
+    }
+    if (res.add.length || res.bump.length || res.clear.length) this._applyLive(res);
+    this._renderLive();
+    this._renderFleet();
+  }
+  _applyLive({ add, bump, clear }) {
+    const at = new Date().toISOString();
+    const name = (key) => this.scene.models.find((m) => m.key === key)?.name || key;
+    const notes = [], fresh = [];
+    for (const { model, row, sig } of add) {
+      const st = this._st(model);
+      const taken = new Set([...this._rowsFor(model).map((r) => r.id), ...st.removed, ...st.history.map((h) => h.id)]);
+      row.id = this._newId('S', taken);
+      st.added.push(row);
+      const R = RULES[sig.kind];
+      st.history.push({ at, kind: 'live', id: row.id, part: row.part, wo: '', by: '', text: `실시간 신호 → 점검 항목 등록 — ${R.ko}${sig.sim ? ' (가상 데이터)' : ''}: ${sig.text}` });
+      notes.push(`${sig.node} ${R.ko} → ${name(model)} ${row.part} 점검 (#${row.id})`);
+      if (model === this.key) fresh.push(row.id);
+    }
+    for (const { model, id, sig } of bump) {
+      const st = this._st(model);
+      const row = st.added.find((r) => r.id === id);
+      if (!row?.live) continue;
+      row.live.count = (row.live.count || 1) + 1;
+      row.live.last = sig.at || at;
+      row.cause = sig.text;
+      st.history.push({ at, kind: 'live', id, part: row.part, wo: '', by: '', text: `실시간 신호 반복 (${row.live.count}회) — ${sig.text}` });
+      notes.push(`${sig.node} ${RULES[sig.kind].ko} 반복 ${row.live.count}회 → #${id}`);
+    }
+    for (const { model, id, sig } of clear) {
+      const st = this._st(model);
+      const row = st.added.find((r) => r.id === id);
+      if (!row) continue;
+      // nothing to inspect once the node reports again: closed like a checked-out signal (not a repair)
+      st.overrides[id] = { ...(st.overrides[id] || {}), status: 'closed', fp: true, wait: null, monitored: null };
+      st.history.push({ at, kind: 'clear', id, part: row.part, wo: '', by: '', text: `${sig.node} 통신 복구 — 점검 불필요, 자동 종료` });
+      notes.push(`${sig.node} 통신 복구 → #${id} 자동 종료`);
+    }
+    for (const model of new Set([...add, ...bump, ...clear].map((x) => x.model))) this._st(model).seq++;
+    this._save();
+    this._recompute();
+    for (const id of fresh) this.popAt.set(id, nowS());
+    if (notes.length && this.on) this.toast(`실시간 · ${notes[0]}${notes.length > 1 ? ` 외 ${notes.length - 1}건` : ''}`, 3600);
+  }
+  /** Nodes of the control server with their mapping and state. */
+  _liveNodes() {
+    const snap = this.link.snap;
+    const { soldiers, env } = nodesOf(snap, this.link.config);
+    const out = [];
+    for (const node of soldiers) {
+      const s = (snap?.soldiers || []).find((x) => x.assigned_node_id === node);
+      const st = s?.connection_state || 'waiting';
+      out.push({ node, cls: 'soldier', model: this.squad.map[node] || '', state: st, ko: { connected: '연결', lost: '두절', waiting: '대기' }[st] || st, color: { connected: GREEN, lost: SEVERITY.mid.color }[st] || GREY });
+    }
+    for (const node of env) {
+      const t = (snap?.telemetry || []).find((x) => x.node_id === node && x.packet_type === 'environment');
+      const st = !t ? 'none' : t.data_stale ? 'stale' : 'recv';
+      out.push({ node, cls: 'env', model: this.squad.map[node] || '', state: st, ko: { recv: '수신', stale: '끊김', none: '미수신' }[st], color: st === 'recv' ? GREEN : st === 'stale' ? SEVERITY.mid.color : GREY });
+    }
+    return out;
+  }
+  _modelName(key) {
+    return this.scene.models.find((m) => m.key === key)?.name || key;
+  }
+  _renderLive() {
+    if (!this.on || !this.$live) return;
+    const st = this.link.status, snap = this.link.snap;
+    let text, btn = '', title = '';
+    if (st === 'live' && snap) {
+      const sim = snap.source === 'simulation';
+      const nodes = this._liveNodes().filter((n) => n.model);
+      text = `SQUAD LINK 실시간 · <span class="${sim ? 'lv-sim' : 'lv-dev'}">${sim ? '가상 데이터' : '실장비'}</span>${nodes.map((n) => ` · ${esc(n.node)} <b style="color:${n.color}">${esc(n.ko)}</b>`).join('')}`;
+      title = [...this._liveNodes().map((n) => `${n.node} → ${n.model ? this._modelName(n.model) : '연결 안 함'} (${n.ko})`), '읽기 전용 — 관제 서버로는 아무것도 보내지 않습니다'].join('\n');
+      btn = this.liveMapOpen ? '닫기' : '연결 설정';
+    } else if (st === 'connecting') text = 'SQUAD LINK 연결 중…';
+    else if (st === 'lost') {
+      const t = snap?.server_time ? new Date(snap.server_time) : null;
+      text = `SQUAD LINK 연결 끊김 — 재연결 중${t && !Number.isNaN(t.getTime()) ? ` (마지막 수신 ${pad2(t.getHours())}:${pad2(t.getMinutes())}:${pad2(t.getSeconds())})` : ''}`;
+    } else {
+      text = '실시간 연동 꺼짐 — SQUAD LINK 중계 서버 없음';
+      btn = '연결';
+      title = 'SQUAD LINK 관제 서버를 실시간으로 따라가려면 node tools/squad_bridge.mjs 를 실행하고 http://localhost:8095/#maint 를 여세요 (이 화면에서 연결을 누르면 localhost:8095 를 시도합니다)';
+    }
+    const html = `<i></i><span class="lv-t">${text}</span>${btn ? `<button data-live="${st === 'live' ? 'map' : 'connect'}" data-air>${btn}</button>` : ''}`;
+    if (html !== this._liveHtml || this.$live.dataset.st !== st) {
+      this._liveHtml = html;
+      this.$live.innerHTML = html;
+      this.$live.dataset.st = st;
+      this.$live.className = `dg-live ${st}`;
+    }
+    this.$live.title = title;
+    const showMap = this.liveMapOpen && st === 'live';
+    this.$map.hidden = !showMap;
+    if (showMap) this._renderMap();
+  }
+  /** Node -> equipment selects (soldier nodes: HaloPod models; environment nodes: the installation, Turret). */
+  _renderMap() {
+    const nodes = this._liveNodes();
+    const kinds = (cls) => Object.keys(RULES).filter((k) => RULES[k].node === cls);
+    const fits = (cls) => this.scene.models.filter((m) => m.key && (ANCHORS[m.key] || []).some((a) => kinds(cls).includes(a.id)));
+    const html = nodes
+      .map((n) => `<label>${esc(n.node)}</label><select data-node="${esc(n.node)}"><option value="">연결 안 함</option>${fits(n.cls).map((m) => `<option value="${esc(m.key)}"${m.key === n.model ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`)
+      .join('') + '<p>병사 노드(halo) = HaloPod · 환경 노드(env) = 설치 지점(Turret 가정) · 변경은 이후 신호부터 적용</p>';
+    if (html !== this._mapHtml) {
+      this._mapHtml = html;
+      this.$map.innerHTML = html;
+    }
+  }
+
   // ------------------------------------------------------------------ scan
   _startScan(kind = 'full') {
     const sc = this.scene;
@@ -1064,7 +1248,7 @@ export class Maint {
       : {
           done: `#${r.id} 정비 완료 — 검사 대기`,
           partial: `#${r.id} 부분 수리 — 심각도 ${SEVERITY[d.sev]?.ko || d.sev}`,
-          false: r.source === 'manual' ? `#${r.id} 등록 취소 — 결함 아님` : `#${r.id} 오탐 처리 — AI 재학습 데이터로 기록`,
+          false: r.source === 'manual' ? `#${r.id} 등록 취소 — 결함 아님` : r.source === 'live' ? `#${r.id} 이상 없음 — 점검 종료` : `#${r.id} 오탐 처리 — AI 재학습 데이터로 기록`,
         }[f.result] || out.log?.text || '정비 결과 등록';
     this.toast(msg, 2600);
     this._resetForm();
@@ -1341,7 +1525,7 @@ export class Maint {
   }
   /** 내보내기: the defects in the web/defects.json format (can be imported again). */
   _export() {
-    const data = { _comment: `${NOTICE} · 출처(source): sample = 예시, manual = 수동 입력, import = 불러옴`, generated: new Date().toISOString(), [this.key]: this._exportRows() };
+    const data = { _comment: `${NOTICE} · 출처(source): sample = 예시, manual = 수동 입력, import = 불러옴, live = 실시간(SQUAD LINK)`, generated: new Date().toISOString(), [this.key]: this._exportRows() };
     download(`${fileKey(this.key)}-defects-${today()}.json`, JSON.stringify(data, null, 2));
     this.toast('결함 목록을 JSON으로 저장했습니다');
   }
@@ -1359,7 +1543,7 @@ export class Maint {
       defects: this._exportRows(),
       history: this._hist(),
       report: rep,
-      aiFeedback: this.rows.filter((r) => r.fp && r.source !== 'manual').map((r) => ({ id: r.id, part: r.part, type: r.type, sev: r.origSev || r.sev, p: r.p, n: r.n, conf: r.conf ?? null, source: r.source, label: '오탐 (결함 아님)' })),
+      aiFeedback: this.rows.filter((r) => r.fp && r.source !== 'manual' && r.source !== 'live').map((r) => ({ id: r.id, part: r.part, type: r.type, sev: r.origSev || r.sev, p: r.p, n: r.n, conf: r.conf ?? null, source: r.source, label: '오탐 (결함 아님)' })),
     };
     download(`${fileKey(this.key)}-maintenance-${today()}.json`, JSON.stringify(data, null, 2));
     this.toast('정비 기록을 JSON으로 저장했습니다');
@@ -1386,10 +1570,11 @@ export class Maint {
     return !!r && r.status === 'open' && !!r.monitored && this.report?.defects[r.id]?.action === 'monitor';
   }
   _statusKo(r) {
-    return r.fp ? '오탐' : STATUS[r.status]?.ko || r.status;
+    return r.fp ? (r.source === 'live' ? '이상 없음' : '오탐') : STATUS[r.status]?.ko || r.status;
   }
   _confText(r) {
     if (r.source === 'manual') return '수동 등록';
+    if (r.source === 'live') return `실시간 ${r.live?.node || ''}${r.live?.count > 1 ? ` · ${r.live.count}회` : ''}`.trim();
     return r.conf != null && Number.isFinite(+r.conf) ? `AI 신뢰도 ${Math.round(r.conf * 100)}%` : '신뢰도 없음';
   }
   _escalation(a) {
@@ -1414,6 +1599,8 @@ export class Maint {
     const hist = [...this._hist()].reverse();
     const sample = rows.some((r) => r.source === 'sample');
     const sim = hist.some((h) => /시뮬레이션/.test(h.text || ''));
+    const liveSim = rows.some((r) => r.source === 'live' && r.live?.sim);
+    const live = rows.some((r) => r.source === 'live');
     const T = (r) => TYPES[r.type] || { ko: r.type, measure: '크기' };
     const fleet = this.fleet
       .map((f) => {
@@ -1425,7 +1612,7 @@ export class Maint {
       .map((r, k) => {
         const a = rep.defects[r.id] || {};
         const extra = [this._escalation(a), r.condemned ? '불용 판정' : '', r.wait === 'supply' ? '보급 대기' : '', a.needsConfirm && r.status === 'open' ? '확인 필요' : ''].filter(Boolean).join(', ');
-        return `<tr class="${r.status}"><td>${k + 1}</td><td>${esc(r.id)}</td><td>${esc(this._label(r.part))}</td><td>${esc(T(r).ko)}</td><td>${esc(SEVERITY[r.sev]?.ko || r.sev)}</td><td>${esc(T(r).measure)} ${mm(r.size)} mm</td><td>${esc(this._confText(r))}</td><td>${esc(SOURCES[r.source]?.ko || r.source)}</td><td>${r.status === 'closed' ? '—' : esc(`${a.priority || ''} ${PRIORITY[a.priority]?.ko || ''}`)}</td><td>${r.status === 'closed' ? '—' : esc(ACTIONS[a.action]?.ko || '')}</td><td>${r.status === 'closed' ? '—' : esc(LEVELS[a.level]?.ko || '')}</td><td>${esc(this._statusKo(r))}${extra ? `<br><small>${esc(extra)}</small>` : ''}</td></tr>`;
+        return `<tr class="${r.status}"><td>${k + 1}</td><td>${esc(r.id)}</td><td>${esc(this._label(r.part))}</td><td>${esc(T(r).ko)}</td><td>${esc(SEVERITY[r.sev]?.ko || r.sev)}</td><td>${T(r).measure ? `${esc(T(r).measure)} ${mm(r.size)} mm` : '—'}</td><td>${esc(this._confText(r))}</td><td>${esc(SOURCES[r.source]?.ko || r.source)}${r.live?.sim ? ' (가상)' : ''}${r.source === 'live' && r.cause ? `<br><small>${esc(r.cause)}</small>` : ''}</td><td>${r.status === 'closed' ? '—' : esc(`${a.priority || ''} ${PRIORITY[a.priority]?.ko || ''}`)}</td><td>${r.status === 'closed' ? '—' : esc(ACTIONS[a.action]?.ko || '')}</td><td>${r.status === 'closed' ? '—' : esc(LEVELS[a.level]?.ko || '')}</td><td>${esc(this._statusKo(r))}${extra ? `<br><small>${esc(extra)}</small>` : ''}</td></tr>`;
       })
       .join('');
     const plans = rows
@@ -1443,7 +1630,7 @@ export class Maint {
     const history = hist
       .map((h) => `<tr><td>${esc(stamp(h.at, true))}</td><td>${esc(h.wo || '')}</td><td>${esc(KIND[h.kind] || h.kind || '')}</td><td>${esc(h.text || '')}${h.memo ? `<br><small>메모: ${esc(h.memo)}</small>` : ''}</td><td>${esc(h.by || '')}</td><td>${h.minutes ? `${h.minutes}분${h.planned ? ` / 계획 ${h.planned}분 (예시)` : ''}` : ''}</td></tr>`)
       .join('');
-    const notice = sample || sim;
+    const notice = sample || sim || liveSim;
     const css = `
       body { font: 13px/1.5 system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; color: #1b1f2a; margin: 28px 32px ${notice ? '64px' : '28px'}; }
       h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 15px; margin: 22px 0 8px; border-bottom: 1px solid #ccd; padding-bottom: 4px; }
@@ -1457,7 +1644,7 @@ export class Maint {
     const deferred = rd.deferred?.length ? `<p>이월 정비 (운용 영향 없음): ${rd.deferred.map(esc).join(', ')}</p>` : '';
     return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>정비 진단 보고서 (시연용)</title><style>${css}</style></head><body>
 <h1>정비 진단 보고서 (시연용)</h1>
-<p class="meta">장비: ${esc(this._kb()?.equipment || this.def?.name || '')} · 작성 ${esc(stamp(new Date().toISOString(), true))} · 지식베이스: 예시 지식베이스${sample ? ' · 결함 데이터: 예시 포함' : ''}</p>
+<p class="meta">장비: ${esc(this._kb()?.equipment || this.def?.name || '')} · 작성 ${esc(stamp(new Date().toISOString(), true))} · 지식베이스: 예시 지식베이스${sample ? ' · 결함 데이터: 예시 포함' : ''}${live ? ` · 실시간 연동: SQUAD LINK (${liveSim ? '가상 데이터' : '실장비'}) — 신호는 점검 위치 안내이며 손상 확정이 아님` : ''}</p>
 <h2>장비 상태</h2>
 <p><span class="rd" style="color:${rd.color}">${esc(rdLabel(rd.status))}</span> &nbsp; 건강도 ${rep.health}% &nbsp; 미조치 결함 ${rep.counts.open}건 (P1 ${rep.counts.P1} · P2 ${rep.counts.P2} · P3 ${rep.counts.P3}) · 검사 대기 ${rep.counts.repaired}건 · 해결 ${rep.counts.closed}건</p>
 ${reasons}${deferred}
@@ -1469,7 +1656,7 @@ ${reasons}${deferred}
 <table><tr><th>작업지시</th><th>결함</th><th>조치</th><th>정비 단계</th><th>예상 시간</th><th>분해 순서</th><th>절차</th></tr>${plans || '<tr><td colspan="7">미해결 결함 없음</td></tr>'}</table>
 <h2>정비 이력</h2>
 <table><tr><th>시각</th><th>작업지시</th><th>구분</th><th>내용</th><th>정비자</th><th>소요 / 계획</th></tr>${history || '<tr><td colspan="6">이력 없음</td></tr>'}</table>
-${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬레이션(예시)' : ''} · 시연용 보고서</div>` : ''}
+${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬레이션(예시)' : ''}${liveSim ? ' · 실시간 신호는 SQUAD LINK 가상 데이터' : ''} · 시연용 보고서</div>` : ''}
 </body></html>`;
   }
 
@@ -1490,6 +1677,24 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     this.$tabs = $('dg-tabs');
     this.$body = $('dg-body');
     this.$chip = $('b-maint');
+    this.$live = $('dg-live');
+    this.$map = $('dg-map');
+    this.$live.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-live]');
+      if (!b) return;
+      if (b.dataset.live === 'map') {
+        this.liveMapOpen = !this.liveMapOpen;
+        this._renderLive();
+      } else this._liveConnect(true);
+    });
+    this.$map.addEventListener('change', (e) => {
+      const node = e.target.dataset?.node;
+      if (!node) return;
+      this.squad.map[node] = e.target.value;
+      this._saveSquad();
+      this.toast(`${node} → ${e.target.value ? this._modelName(e.target.value) : '연결 안 함'}`);
+      if (this.link.snap) this._onSquad(this.link.snap);
+    });
     this.$file = document.createElement('input');
     Object.assign(this.$file, { type: 'file', accept: '.json,application/json', hidden: true, id: 'mt-file' });
     document.body.appendChild(this.$file);
@@ -1532,6 +1737,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
   _render(resetScroll = false) {
     if (!this.on) return;
     this._renderHead();
+    this._renderLive();
     this._renderFleet();
     this._renderNext();
     this.$tabs.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === this.tab));
@@ -1569,6 +1775,8 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
   }
 
   _renderFleet() {
+    if (!this.on) return;
+    const live = this.link.status === 'live' ? this._liveNodes() : [];
     const html = this.fleet
       .map((f) => {
         const rd = f.report.readiness, c = f.report.counts, active = f.def === this.def;
@@ -1576,7 +1784,8 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
         const open = (c.open || 0) + (c.repaired || 0);
         const sub = pending ? '판독 중…' : open ? (c.P1 ? `P1 ${c.P1}건 · 결함 ${open}건` : `결함 ${open}건`) : '미해결 결함 없음';
         const col = pending ? GREY : rd.color;
-        return `<button class="dg-pill${active ? ' on' : ''}" data-i="${f.index}" data-key="${esc(f.key)}" data-air title="${esc(f.def.name)} — ${esc(pending ? '판독 중' : rdLabel(rd.status))}"><i style="background:${col};color:${col}"></i><span><b>${esc(f.def.name)}</b><small>${esc(sub)}</small></span></button>`;
+        const lv = live.filter((n) => n.model === f.key).map((n) => `<em style="color:${n.color}" title="SQUAD LINK ${esc(n.node)} ${esc(n.ko)}"> · ${esc(n.node)}</em>`).join('');
+        return `<button class="dg-pill${active ? ' on' : ''}" data-i="${f.index}" data-key="${esc(f.key)}" data-air title="${esc(f.def.name)} — ${esc(pending ? '판독 중' : rdLabel(rd.status))}"><i style="background:${col};color:${col}"></i><span><b>${esc(f.def.name)}</b><small>${esc(sub)}${lv}</small></span></button>`;
       })
       .join('');
     if (html !== this._fleetHtml) {
@@ -1644,6 +1853,10 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     const chips = [];
     if (r.source === 'sample') chips.push(chip('예시', 'src'));
     else if (r.source === 'import') chips.push(chip('불러옴', 'src'));
+    else if (r.source === 'live') {
+      chips.push(chip('실시간', 'live'));
+      if (r.live?.sim) chips.push(chip('가상 데이터', 'src'));
+    }
     if (!closed && a.priority) chips.push(chip(`${a.priority} ${PRIORITY[a.priority]?.ko || ''}`, 'col', PRIORITY[a.priority]?.color));
     const stc = r.fp ? GREY : r.status === 'open' ? '' : STATUS[r.status]?.color || '';
     chips.push(chip(this._statusKo(r), stc ? 'col' : 'st', stc));
@@ -1660,7 +1873,8 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
       <i class="mt-num" style="background:${badge};color:${inkOn(badge)}">${closed ? '✓' : r.status === 'repaired' ? '✓' : n}</i>
       <div class="mt-main">
         <div class="mt-l1"><b>#${esc(r.id)} ${esc(T.ko)}</b><span class="mt-sev" style="color:${S.color}">${esc(S.ko)}</span><span class="mt-code">${esc(r.part)}</span></div>
-        <div class="mt-l2">${esc(this._label(r.part))} · ${esc(T.measure)} ${mm(r.size)} mm · ${esc(this._confText(r))}</div>
+        <div class="mt-l2">${esc(this._label(r.part))}${T.measure ? ` · ${esc(T.measure)} ${mm(r.size)} mm` : ''} · ${esc(this._confText(r))}</div>
+        ${r.source === 'live' && r.cause ? `<div class="mt-cause" title="${esc(r.cause)}">${esc(r.cause)}</div>` : ''}
         <div class="mt-chips">${chips.join('')}</div>
       </div>
       ${r.source === 'manual' ? `<button class="mt-del" data-act="del" data-id="${esc(r.id)}" title="수동 등록 결함 삭제 (Delete)">✕</button>` : ''}
@@ -1786,7 +2000,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     const safety = (plan.safety || []).length
       ? `<div class="mt-safety" title="${esc(plan.safety.join('\n'))}">${plan.safety.slice(0, 2).map((s) => `<p>⚠ ${esc(s)}</p>`).join('')}${plan.safety.length > 2 ? `<p class="more">외 ${plan.safety.length - 2}건 — 준비 단계 참조</p>` : ''}</div>`
       : '';
-    const note = plan.note ? `<p class="mt-note">${esc(plan.note)}</p>` : '';
+    const note = (r.source === 'live' && r.cause ? `<p class="mt-note live">실시간 신호 — ${esc(r.cause)}${r.live?.count > 1 ? ` (${r.live.count}회)` : ''}</p>` : '') + (plan.note ? `<p class="mt-note">${esc(plan.note)}</p>` : '');
     const steps = `<div class="mt-play"><button data-act="play" data-air>${this.play ? '❚❚ 일시 정지' : '▶ 절차 재생'}</button><span class="mt-prog">${set.size}/${plan.steps.length} 완료</span></div>
       <ol class="mt-steps">${plan.steps
         .map((s, k) => `<li class="mt-step${k === this.stepIdx ? ' cur' : ''}${set.has(s.id) ? ' done' : ''}" data-act="step" data-k="${k}" data-air><input type="checkbox" data-act="chk" data-k="${k}"${set.has(s.id) ? ' checked' : ''} aria-label="완료 표시" /><span class="k k-${esc(s.kind)}">${esc(STEP_KINDS[s.kind] || s.kind)}</span><span class="t">${esc(s.text)}</span></li>`)
@@ -1797,7 +2011,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     return head + acc + safety + note + steps + det + this._htmlForm(r, plan);
   }
   _htmlForm(r, plan) {
-    if (r.status === 'closed') return `<div class="mt-form done"><p>${r.fp ? (r.source === 'manual' ? '등록 취소 — 결함 아님' : '오탐 처리 — AI 재학습 데이터로 기록됨') : '해결 — 재검사 합격'}</p></div>`;
+    if (r.status === 'closed') return `<div class="mt-form done"><p>${r.fp ? (r.source === 'manual' ? '등록 취소 — 결함 아님' : r.source === 'live' ? '이상 없음 — 실시간 신호 항목 종료' : '오탐 처리 — AI 재학습 데이터로 기록됨') : '해결 — 재검사 합격'}</p></div>`;
     if (r.status === 'repaired') {
       if (r.source === 'sample') {
         return `<div class="mt-form open insp"><p>정비 완료 — 검사 대기${this._holds(r.id) ? ' · 재검사 합격 전 운용 금지' : ''}</p><button class="mt-submit" data-act="reinspect" data-air${this.scan === 'running' ? ' disabled' : ''}>AI 재검사</button><small>시뮬레이션 재검사 — 예시 결함에만 사용합니다</small></div>`;
@@ -2072,12 +2286,12 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     const S = SEVERITY[r.sev] || SEVERITY.mid, T = TYPES[r.type] || { ko: r.type, measure: '크기' };
     const closed = r.status === 'closed';
     const l3 = closed
-      ? r.fp ? '오탐 처리 (결함 아님)' : '해결 — 재검사 합격'
+      ? r.fp ? (r.source === 'live' ? '이상 없음 (점검 종료)' : '오탐 처리 (결함 아님)') : '해결 — 재검사 합격'
       : [`${a.priority || ''} ${PRIORITY[a.priority]?.ko || ''}`.trim(), ACTIONS[a.action]?.ko, LEVELS[a.level]?.ko, r.status === 'repaired' ? '검사 대기' : ''].filter(Boolean).join(' · ');
     const l4 = r.status === 'open' ? '수리 절차 보기 ›' : r.status === 'repaired' ? (r.source === 'sample' ? 'AI 재검사 ›' : '검사 결과 입력 ›') : '';
     const lines = [
       { text: `#${r.id} ${T.ko} · ${S.ko}`, font: `700 14px ${SANS}`, color: S.color, h: 18 },
-      { text: `${this._label(r.part)} · ${T.measure} ${mm(r.size)} mm · ${this._confText(r)}`, font: `500 11.5px ${SANS}`, color: '#d9edf5', h: 15 },
+      { text: `${this._label(r.part)}${T.measure ? ` · ${T.measure} ${mm(r.size)} mm` : ''} · ${this._confText(r)}`, font: `500 11.5px ${SANS}`, color: '#d9edf5', h: 15 },
       { text: l3, font: `600 11.5px ${SANS}`, color: closed ? GREEN : PRIORITY[a.priority]?.color || '#fff', h: 15 },
       { text: l4, font: `600 11.5px ${SANS}`, color: ACCENT, h: 15 },
     ].filter((l) => l.text);

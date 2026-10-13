@@ -29,7 +29,7 @@ const HOT = new THREE.Color('#ffb547'); // selection accent (amber, like the HUD
 // a procedural crack / scratch / dent / wear / corrosion / deformation pattern plus an "AI detection"
 // ring there. No extra geometry, so it follows the surface exactly and moves with explode / drag.
 const MAX_DEF = 8; // defects drawn per part
-export const DEFECT_CODES = { crack: 0, scratch: 1, dent: 2, wear: 3, corrosion: 4, deform: 5 };
+export const DEFECT_CODES = { crack: 0, scratch: 1, dent: 2, wear: 3, corrosion: 4, deform: 5, impact: 6, fault: 7 };
 const hashId = (s) => {
   let h = 2166136261;
   for (const ch of String(s)) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
@@ -159,7 +159,7 @@ void defectLayer(vec3 p, vec3 nrm, out vec3 emit, out vec3 markCol, out float ma
       core = m * (0.45 + 0.55 * n) + pit * 0.6;
       halo = 0.25 * m;
       look = mix(vec3(0.42, 0.16, 0.05), vec3(0.12, 0.05, 0.02), pit); lookA = clamp(m * 0.85 + pit * 0.3, 0.0, 1.0);
-    } else {                    // deform: elliptical contour map along the main direction
+    } else if (type == 5) {     // deform: elliptical contour map along the main direction
       float e = length(vec2(q.x * 0.72, q.y * 1.35));
       float cd = abs(fract(e * 5.0 + 0.5) - 0.5) / 5.0;
       float inside = 1.0 - smoothstep(0.88, 1.0, e);
@@ -167,6 +167,17 @@ void defectLayer(vec3 p, vec3 nrm, out vec3 emit, out vec3 markCol, out float ma
       halo = (1.0 - e) * inside * 0.35;
       col = mix(col, vec3(0.45, 0.6, 1.0), smoothstep(0.2, 0.9, e) * 0.6);
       look = vec3(0.0); lookA = 0.0;
+    } else if (type == 6) {     // impact (SQUAD LINK signal): shock waves running outwards, no surface mark
+      for (int w = 0; w < 3; w++) {
+        float rr = fract(uTime * 0.45 + float(w) / 3.0);
+        core = max(core, dLine(abs(rho - rr * 0.95), 0.012 + 0.02 * (1.0 - rr), px) * (1.0 - rr));
+      }
+      core = max(core, 1.0 - smoothstep(0.1, 0.16, rho));
+      halo = 0.3 * (1.0 - smoothstep(0.0, 0.9, rho));
+    } else {                    // fault (SQUAD LINK signal): blinking core inside a fixed ring, no surface mark
+      float blink = 0.3 + 0.7 * step(0.45, fract(uTime * 1.2));
+      core = (1.0 - smoothstep(0.24, 0.3, rho)) * blink + dLine(abs(rho - 0.55), 0.014, px) * 0.8;
+      halo = 0.35 * blink * (1.0 - smoothstep(0.0, 0.8, rho));
     }
     // AI detection ring at the defect radius: dashed, slowly turning; brighter when selected
     float ang = atan(q.y, q.x);
@@ -833,7 +844,7 @@ export class StlScene {
       if (t.lengthSq() < 0.04) t = new THREE.Vector3(0, 1, 0).addScaledVector(n, -n.y);
       t.normalize();
       const was = prev.get(d.id);
-      const fresh = this.scan ? 0 : 1;
+      const fresh = this.scan ? 0 : 1; // outside a scan a new row grows in (0 -> 1 in 0.3 s)
       const rd = {
         id: d.id,
         part: d.part,
@@ -848,7 +859,7 @@ export class StlScene {
         flipped, // the given normal pointed into the material and was replaced
         drawn: false,
         slot: -1,
-        reveal: was ? was.reveal : fresh,
+        reveal: was ? was.reveal : 0,
         revealT: was ? was.revealT : fresh,
         world: was ? was.world : new THREE.Vector3(),
         occluded: was ? was.occluded : false,

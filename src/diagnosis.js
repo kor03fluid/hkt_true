@@ -11,13 +11,16 @@ export const TYPES = {
   wear:      { ko: '마모',     en: 'Wear',        measure: '길이' },
   corrosion: { ko: '부식',     en: 'Corrosion',   measure: '지름' },
   deform:    { ko: '변형',     en: 'Deformation', measure: '지름' },
+  // SQUAD LINK signals (src/squad.js): where to inspect, not a measured defect (no size)
+  impact:    { ko: '충격 감지', en: 'Impact',     measure: '', signal: true },
+  fault:     { ko: '전자부 이상', en: 'Fault',    measure: '', signal: true },
 };
 export const SEVERITY = {
   high: { ko: '위험', en: 'CRITICAL', color: '#ff4d5e', rank: 3 },
   mid:  { ko: '주의', en: 'WARNING',  color: '#ff9f43', rank: 2 },
   low:  { ko: '경미', en: 'MINOR',    color: '#ffd84d', rank: 1 },
 };
-export const SOURCES = { sample: { ko: '예시' }, manual: { ko: '수동 입력' }, import: { ko: '불러옴' } };
+export const SOURCES = { sample: { ko: '예시' }, manual: { ko: '수동 입력' }, import: { ko: '불러옴' }, live: { ko: '실시간' } };
 export const STATUS = { open: { ko: '미조치' }, repaired: { ko: '검사 대기', color: '#7fb2ff' }, closed: { ko: '해결', color: '#5be38a' } };
 export const ACTIONS = { replace: { ko: '교체' }, repair: { ko: '보수' }, monitor: { ko: '관찰(추적 점검)' } };
 export const PRIORITY = { P1: { ko: '긴급', desc: '운용 중지·즉시 정비', color: '#ff4d5e' }, P2: { ko: '우선', desc: '다음 운용 전', color: '#ff9f43' }, P3: { ko: '통상', desc: '정기 점검 시', color: '#ffd84d' } };
@@ -29,13 +32,13 @@ export const STEP_KINDS = { prep: '준비', remove: '분해', work: '정비 작�
 export const NOTICE = '예시 데이터 포함 — 실제 점검·정비 결과가 아님';
 export const DEFERRED = '이월 정비 (운용 영향 없음)';
 
-const TYPE_W = { crack: 1.0, deform: 0.8, corrosion: 0.7, dent: 0.6, wear: 0.55, scratch: 0.3 };
+const TYPE_W = { crack: 1.0, fault: 0.85, deform: 0.8, corrosion: 0.7, dent: 0.6, impact: 0.6, wear: 0.55, scratch: 0.3 };
 const SEV_W = { high: 1.0, mid: 0.6, low: 0.3 };
 const CRIT_W = { 3: 1.0, 2: 0.75, 1: 0.5 };
 const SEV_DOWN = { high: 'mid', mid: 'low', low: 'low' };
 const LEVEL_IDS = ['unit', 'field', 'depot'];
 const UNIT_REPLACE_ROLES = ['cover', 'interface', 'demo', 'mount'];
-const REPAIR_MIN = { crack: 40, scratch: 15, dent: 25, wear: 20, corrosion: 30, deform: 30 };
+const REPAIR_MIN = { crack: 40, scratch: 15, dent: 25, wear: 20, corrosion: 30, deform: 30, impact: 20, fault: 30 };
 const NUM = '①②③④⑤⑥⑦⑧⑨';
 // the KB marks axis-carrying parts with this precaution (B-04, B-05, Y-01, Y-03, H-01v4); they get
 // an axis re-zero after replacement even when their role is not 'drive' (H-01v4 is 'structure')
@@ -55,15 +58,20 @@ const WORK = {
   deform: ['직각도·평탄도 측정 (정반·직각자)', '체결 이완 후 재체결로 조립 응력 해소', '회복 안 되면 소성 변형 — 교체 전환'],
   corrosion: ['부식 생성물·오염 제거', '모재 재질 확인 — 금속이면 방청 처리, 비금속이면 오염·변색으로 재분류', '녹슨 체결구 교체',
     '습기·이종금속 접촉 원인 제거'],
+  impact: ['충격 부위와 주변 균열·찍힘·변형 육안 점검 (확대경, 사진 기록)', '내부 기판·배터리 고정 상태와 커넥터 체결 확인',
+    '손상 발견 시 해당 결함으로 별도 등록 (결함 추가) — 없으면 「이상 없음」 처리'],
+  fault: ['전원 재인가 후 기동·상태 표시 확인', '커넥터 체결·배선 도통 점검 (멀티미터)', '센서·모듈 재장착 — 같은 증상 반복 시 교체 검토'],
 };
 const WORK_MONITOR = ['현 상태 측정·사진 기록', '재점검 시기 등록', '보수 전환 기준 기록 (예: 크기 20% 증가, 예시)'];
+const WORK_MONITOR_SIGNAL = ['신호 상태 기록 (관제 최종 수신 시각·사유)', '재점검 시기 등록', '보수 전환 기준 기록 (예: 같은 증상 2회 반복, 예시)'];
 const REPAIR_TOOLS = {
   crack: ['버니어 캘리퍼스'], scratch: ['버니어 캘리퍼스'], dent: ['버니어 캘리퍼스', '다이얼 게이지'],
   wear: ['틈새 게이지', '다이얼 게이지'], deform: ['직각자', '다이얼 게이지'], corrosion: ['버니어 캘리퍼스'],
+  impact: ['확대경', '버니어 캘리퍼스'], fault: ['멀티미터'],
 };
 const REPAIR_MATERIALS = {
   crack: ['IPA 세척제', '2액형 에폭시'], scratch: ['IPA 세척제'], dent: [], wear: ['윤활제'], deform: [],
-  corrosion: ['IPA 세척제', '방청제'],
+  corrosion: ['IPA 세척제', '방청제'], impact: [], fault: [],
 };
 
 const arr = (v) => (Array.isArray(v) ? v : []);
@@ -148,6 +156,7 @@ function actionOf(d, pk, code) {
     case 'crack': return sev === 'low' || (sev === 'mid' && pk.crit === 1) ? 'repair' : 'replace';
     case 'corrosion': return sev === 'high' ? 'replace' : 'repair';
     case 'scratch': return sev === 'low' ? 'monitor' : 'repair';
+    case 'impact': return sev === 'low' ? 'monitor' : 'repair'; // an observation: inspect, never replace blind
     default: return sev === 'high' ? 'replace' : sev === 'mid' ? 'repair' : 'monitor'; // deform, dent, wear
   }
 }
@@ -163,6 +172,7 @@ function baseLevelOf(d, pk, code, action, kb) {
     return ['field', n > 1 ? '부품 교환 — 분해·정렬 필요' : pk.crit === 3 ? '주요 부품 교환' : '부품 교환'];
   }
   const hard = ['electronics', 'drive'].includes(pk.role);
+  if (d.type === 'impact') return ['unit', '충격 부위 점검'];
   if (['scratch', 'wear', 'corrosion'].includes(d.type) && pk.crit <= 2 && !hard) return ['unit', '표면 보수·윤활'];
   if (hard) return ['field', '전자·구동부 보수'];
   if (pk.crit === 3) return ['field', '주요 부품 보수'];
@@ -189,7 +199,8 @@ export function assess(defect, partKb, code = defect && defect.part, kb = null) 
   const [baseLevel, levelWhy] = baseLevelOf(defect, pk, code, action, kb);
   // a condemned defect stays at depot whatever its (forced) replace action would normally need
   const level = defect.condemned ? 'depot' : LEVEL_IDS[Math.min(2, LEVEL_IDS.indexOf(baseLevel) + clamp(num(defect.escalated, 0), 0, 2))];
-  const needsConfirm = defect.conf != null && defect.conf < 0.8;
+  // low AI confidence, or a field signal (SQUAD LINK) that only says where to look
+  const needsConfirm = (defect.conf != null && defect.conf < 0.8) || !!defect.confirm;
   return { risk, priority, action, level, baseLevel, needsConfirm, why: { priority: why, level: levelWhy } };
 }
 
@@ -312,7 +323,7 @@ export function diagnose({ parts = [], defects = [], kb = null } = {}) {
 
   const counts = {
     open: open.length, high: 0, mid: 0, low: 0, repaired: repaired.length, closed: closed.length,
-    fp: closed.filter((d) => d.fp).length,
+    fp: closed.filter((d) => d.fp && d.source !== 'live').length, // AI misreads only (a live signal that checked out fine is not one)
     escalated: defects.filter((d) => stateOf(d) !== 'closed' && num(d.escalated, 0) > 0).length,
     supply: open.filter((d) => d.wait === 'supply').length, P1: 0, P2: 0, P3: 0,
   };
@@ -353,7 +364,7 @@ export function repairPlan({ defect, parts = [], kb = null, modelKey = '', seq =
   const verify = uniq([VERIFY_DEFECT, ...checks, ...(access.length ? [VERIFY_REASSEMBLY] : [])]);
 
   let work;
-  if (monitor) work = WORK_MONITOR;
+  if (monitor) work = TYPES[defect.type]?.signal ? WORK_MONITOR_SIGNAL : WORK_MONITOR;
   else if (action === 'replace') {
     work = [`예비품 형상·부품번호(${code}) 대조`, '예비품 장착 (위치·방향 확인)', '체결 (규정 토크, 기술교범 확인)'];
     if (drive) work.push('선회/고각 원점·캘리브레이션');
@@ -362,7 +373,9 @@ export function repairPlan({ defect, parts = [], kb = null, modelKey = '', seq =
 
   const steps = [];
   const add = (kind, part, text) => steps.push({ id: 's' + (steps.length + 1), kind, part, text });
-  const confirm = `육안·계측으로 결함 확인 (AI 신뢰도 ${Math.round(num(defect.conf, 0) * 100)}%) — 결함 아니면 오탐 처리`;
+  const confirm = defect.source === 'live'
+    ? '실물 확인 — 실시간 신호는 관측일 뿐 손상 확정 아님 (이상 없으면 「이상 없음」 처리)'
+    : `육안·계측으로 결함 확인 (AI 신뢰도 ${Math.round(num(defect.conf, 0) * 100)}%) — 결함 아니면 오탐 처리`;
   if (!monitor) {
     // isolate first (power, axes, stored energy), then touch and measure
     safety.forEach((s) => add('prep', null, s));
@@ -472,8 +485,11 @@ export function applyFeedback(defect, fb = {}, ctx = {}) {
     d.status = 'closed';
     d.fp = true;
     kind = 'fp';
-    // only an AI detection can be an AI misread; a manual entry is simply withdrawn
-    text = defect.source === 'manual' ? '등록 취소 — 결함 아님 (수동 등록)' : '오탐 판정 — AI 판독 오류 (재학습 데이터)';
+    // only an AI detection can be an AI misread; a manual entry is simply withdrawn, a field signal checked out fine
+    if (defect.source === 'live') kind = 'clear';
+    text = defect.source === 'manual' ? '등록 취소 — 결함 아님 (수동 등록)'
+      : defect.source === 'live' ? '점검 결과 이상 없음 — 실시간 신호 항목 종료'
+        : '오탐 판정 — AI 판독 오류 (재학습 데이터)';
   }
   if (fb.memo != null && fb.memo !== '') d.memo = fb.memo;
   const log = {

@@ -20,6 +20,10 @@ Checks (a failure stops with exit 1, warnings are printed):
 
 Run from the repo root:  python3 -I tools/place_defects.py          (writes web/defects.json)
 Re-check only:           python3 -I tools/place_defects.py --check  (verifies web/defects.json)
+Live-link anchors:       python3 -I tools/place_defects.py --anchors [--check]
+                         (tools/live_anchors_spec.json -> web/live_anchors.json: the same placement and
+                         checks, but the rows are inspection spots for the SQUAD LINK signals, so they
+                         carry no type / severity)
 Needs: numpy
 """
 import json
@@ -30,8 +34,9 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 MODELS = ROOT / "web" / "models"
-SPEC = ROOT / "tools" / "defects_spec.json"
-OUT = ROOT / "web" / "defects.json"
+ANCHORS = "--anchors" in sys.argv
+SPEC = ROOT / "tools" / ("live_anchors_spec.json" if ANCHORS else "defects_spec.json")
+OUT = ROOT / "web" / ("live_anchors.json" if ANCHORS else "defects.json")
 TYPES = {"crack", "scratch", "dent", "wear", "corrosion", "deform"}
 SEVS = {"high", "mid", "low"}
 SNAP_TOL = 0.05  # mm
@@ -154,7 +159,7 @@ def place(spec):
                 if np.linalg.norm(t) < 0.2:
                     t = np.array([0, 1.0, 0]) - n * n[1]
             t = unit(t)
-            row = {k: it[k] for k in ("id", "part", "type", "sev")}
+            row = {k: it[k] for k in ("id", "part", "type", "sev") if k in it}
             row["p"] = [round(float(x), 2) for x in p]
             row["n"] = [round(float(x), 4) for x in n]
             row["t"] = [round(float(x), 4) for x in t]
@@ -179,9 +184,9 @@ def check(data, verbose=True):
             if d.get("id") in ids:
                 problems.append(f"{tag}: duplicate id")
             ids.add(d.get("id"))
-            if d.get("type") not in TYPES:
+            if not ANCHORS and d.get("type") not in TYPES:
                 problems.append(f"{tag}: bad type {d.get('type')}")
-            if d.get("sev") not in SEVS:
+            if not ANCHORS and d.get("sev") not in SEVS:
                 problems.append(f"{tag}: bad sev {d.get('sev')}")
             if not (isinstance(d.get("size"), (int, float)) and d["size"] > 0):
                 problems.append(f"{tag}: size must be > 0")
@@ -212,7 +217,7 @@ def check(data, verbose=True):
             if flat < 0.75:
                 warnings.append(f"{tag}: patch not flat (mean dot {flat:.2f}) — overlay will wrap edges")
             if verbose:
-                print(f"  {tag:<16} {d['part']:<11} {d['type']:<9} {d['sev']:<4} p=({p[0]:8.2f},{p[1]:8.2f},{p[2]:8.2f}) "
+                print(f"  {tag:<16} {d['part']:<11} {d.get('type', '-'):<9} {d.get('sev', '-'):<4} p=({p[0]:8.2f},{p[1]:8.2f},{p[2]:8.2f}) "
                       f"n=({n[0]:5.2f},{n[1]:5.2f},{n[2]:5.2f}) snap={dist:.4f}mm flat={flat:.2f} "
                       f"{'covered by ' + ', '.join(cover) if cover else 'exposed'}")
     return problems, warnings

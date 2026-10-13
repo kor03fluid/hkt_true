@@ -1,0 +1,17 @@
+{
+ "_comment": "SQUAD LINK 실시간 신호를 표시할 부품 표면 위치(앵커). 실시간 항목은 손상 위치가 아니라 '점검할 곳'을 가리킵니다. id = 신호 종류 (impact 충격 · fault 센서 고장 · link 통신 두절 · shock 설치 지점 충격 · heat 고온 노출). at/look/dir 은 defects_spec.json 과 같은 뜻. python3 -I tools/place_defects.py --anchors 로 web/live_anchors.json 생성·검증.",
+ "hailo-Modern": [
+  { "id": "impact", "part": "HP-01L", "at": [180, 160, 50], "look": [0, 1, 0], "dir": [1, 0, 0], "size": 6 },
+  { "id": "fault", "part": "HP-01L", "at": [200, 135, 100], "look": [0, 0, 1], "dir": [1, 0, 0], "size": 6 },
+  { "id": "link", "part": "HP-01L", "at": [270, 135, 50], "look": [1, 0, 0], "dir": [0, 0, 1], "size": 6 }
+ ],
+ "hailo-Legacy": [
+  { "id": "impact", "part": "HP-01L", "at": [-220, 160, 85], "look": [0, 0.96, 0.27], "dir": [1, 0, 0], "size": 6 },
+  { "id": "fault", "part": "HP-01L", "at": [-200, 120, 140], "look": [0, 0, 1], "dir": [1, 0, 0], "size": 6 },
+  { "id": "link", "part": "HP-01L", "at": [-270, 123, 85], "look": [-1, 0, 0], "dir": [0, 0, 1], "size": 6 }
+ ],
+ "Turret": [
+  { "id": "shock", "part": "L-01", "at": [80, -50, -40], "look": [0.5, -0.5, 0.7], "dir": [1, 1, 0], "size": 6 },
+  { "id": "heat", "part": "B-02", "at": [-35, 0, 60], "look": [0, 0, 1], "dir": [0, 1, 0], "size": 6 }
+ ]
+}
