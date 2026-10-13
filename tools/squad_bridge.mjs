@@ -4,13 +4,17 @@
 // https page such as GitHub Pages may not read a plain-http LAN server).
 //
 //   node tools/squad_bridge.mjs [control-server-url] [--port 8095] [--host 127.0.0.1] [--file release/HoloHand-STL.html]
+//                               [--allow-origin <origin>]...
 //   control-server-url defaults to $SQUAD_URL, else http://127.0.0.1:8080 (squad-link: node squad-link/server.mjs)
 //   then open http://localhost:8095/#maint
 //
 // Read-only and one-way: only GET /squad/api/config, /squad/api/state and /squad/api/stream (SSE) are relayed;
 // every other method is refused, so nothing in the viewer can acknowledge, resolve or inject anything.
-// The relayed GETs also carry Access-Control-Allow-Origin: * (plus the private-network preflight answer), so
-// the hosted viewer (GitHub Pages) or a file:// copy can connect to http://localhost:8095 when asked.
+// The squad data is not public: other web pages may read it only from an allowed origin (CORS echo, plus the
+// private-network preflight answer). Allowed by default: the hosted viewer https://kor03fluid.github.io; add
+// more with --allow-origin (or $SQUAD_ALLOW_ORIGINS, comma separated). A file:// copy sends Origin 'null', which
+// sandboxed frames of any site send too, so it is never allowed by default: open the bridge URL instead.
+// Bound to loopback (the default), requests must name localhost / 127.0.0.1 / [::1] in Host (DNS rebinding).
 // No dependencies (Node 18+).
 import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -26,14 +30,24 @@ const opt = (name, d) => {
 const port = Number(opt('port', process.env.PORT || 8095));
 const host = opt('host', '127.0.0.1');
 const file = resolve(ROOT, opt('file', 'release/HoloHand-STL.html'));
+const allow = new Set(['https://kor03fluid.github.io', ...String(process.env.SQUAD_ALLOW_ORIGINS || '').split(',').map((x) => x.trim()).filter(Boolean)]);
+for (let o; (o = opt('allow-origin', null)); ) allow.add(o.replace(/\/+$/, ''));
 const target = new URL(args.find((a) => !a.startsWith('--')) || process.env.SQUAD_URL || 'http://127.0.0.1:8080');
 const ROUTES = new Set(['config', 'state', 'stream']);
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET',
-  'Access-Control-Allow-Headers': '*',
-  'Access-Control-Allow-Private-Network': 'true',
-};
+const LOOPBACK = ['127.0.0.1', 'localhost', '::1'].includes(host);
+const HOSTS = new Set([`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]);
+/** CORS headers for an allowed cross-origin caller, none otherwise (same-origin requests need none). */
+function cors(req) {
+  const o = req.headers.origin;
+  if (!o || !allow.has(o)) return {};
+  return {
+    'Access-Control-Allow-Origin': o,
+    Vary: 'Origin',
+    'Access-Control-Allow-Methods': 'GET',
+    'Access-Control-Allow-Headers': 'Cache-Control, Last-Event-ID',
+    'Access-Control-Allow-Private-Network': 'true',
+  };
+}
 
 let page = null; // { mtimeMs, body }
 async function viewer() {
@@ -50,7 +64,7 @@ function send(res, status, body, type = 'application/json; charset=utf-8', extra
 function relay(req, res, route) {
   const url = new URL(`/api/${route}`, target);
   const up = http.get(url, { headers: { Accept: route === 'stream' ? 'text/event-stream' : 'application/json' } }, (r) => {
-    const headers = { ...CORS, 'Cache-Control': 'no-cache', 'Content-Type': r.headers['content-type'] || 'application/json; charset=utf-8' };
+    const headers = { ...cors(req), 'Cache-Control': 'no-cache', 'Content-Type': r.headers['content-type'] || 'application/json; charset=utf-8' };
     if (route === 'stream') {
       headers.Connection = 'keep-alive';
       headers['X-Accel-Buffering'] = 'no';
@@ -63,16 +77,20 @@ function relay(req, res, route) {
   up.setTimeout(route === 'stream' ? 0 : 4000, () => up.destroy(new Error('timeout')));
   up.on('error', (e) => {
     if (res.headersSent) res.destroy();
-    else send(res, 502, { error: `SQUAD LINK 서버에 연결할 수 없습니다 (${target.origin}): ${e.message}` }, undefined, CORS);
+    else send(res, 502, { error: `SQUAD LINK 서버에 연결할 수 없습니다 (${target.origin}): ${e.message}` }, undefined, cors(req));
   });
   res.on('close', () => up.destroy()); // the viewer left: drop the upstream stream too
 }
 
 const server = http.createServer(async (req, res) => {
   try {
+    if (LOOPBACK && !HOSTS.has(String(req.headers.host || '').toLowerCase())) return send(res, 421, { error: 'Host 헤더가 이 중계 서버가 아닙니다' });
     const path = new URL(req.url, 'http://localhost').pathname;
     const m = /^\/squad\/api\/([a-z]+)$/.exec(path);
-    if (req.method === 'OPTIONS' && m) return send(res, 204, '', 'text/plain', CORS);
+    if (req.method === 'OPTIONS' && m) {
+      const h = cors(req);
+      return send(res, h['Access-Control-Allow-Origin'] ? 204 : 403, '', 'text/plain', h);
+    }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: '읽기 전용 중계입니다 (GET만 허용)' }, undefined, { Allow: 'GET' });
     if (m && ROUTES.has(m[1])) return relay(req, res, m[1]);
     if (path === '/' || path === '/index.html') return send(res, 200, await viewer(), 'text/html; charset=utf-8');
@@ -84,6 +102,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(port, host, () => {
   const shown = host === '0.0.0.0' ? 'localhost' : host;
   console.log(`SQUAD LINK bridge: http://${shown}:${port}/#maint  (viewer ${file.replace(ROOT + '/', '')} · relays ${target.origin}/api/{config,state,stream}, read-only)`);
+  console.log(`  other pages allowed to read it: ${[...allow].join(', ') || '(none)'}`);
   if (host === '0.0.0.0') console.log('  note: other devices reach it over plain http, where browsers turn the camera (hand tracking) off');
 });
 for (const sig of ['SIGINT', 'SIGTERM']) {

@@ -421,7 +421,7 @@ console.log('SQUAD LINK');
   const s4 = snap([soldier('halo_01', 'connected'), soldier('halo_02', 'connected')], s2.events, s1.telemetry);
   const L4 = liveSignals(s4, DEFAULT_MAP, R2.seen.filter((k) => k.startsWith('cond:')));
   const R4 = reconcile({ signals: L4.signals, restored: L4.restored, seen: R2.seen, rows: rows1, anchors: ANCHORS, at: T0 });
-  eq([R4.clear.length, R4.seen.includes('cond:fault:halo_01')], [0, false], 'sensor recovery ends the episode without closing the row');
+  eq([R4.clear.filter((x) => x.sig.kind === 'fault').length, R4.seen.includes('cond:fault:halo_01')], [0, false], 'sensor recovery ends the episode without closing the row');
   const R5 = reconcile({ signals: L1.signals, restored: L1.restored, seen: R4.seen, rows: rows1, anchors: ANCHORS, at: T0 });
   ok(R5.bump.some((x) => x.sig.kind === 'fault'), 'the next sensor failure counts on the open sensor row');
   // a closed impact row: the next impact is a new row; equipment without the anchor is skipped and retried
@@ -457,6 +457,64 @@ console.log('SQUAD LINK');
   ok(fb.log.text.includes('이상 없음') && !fb.log.text.includes('AI'), 'clear text does not blame the AI');
   eq(run('hailo-Legacy', [fb.defect]).counts.fp, 0, 'a cleared signal is not counted as an AI misread');
   eq(reinspect({ ...imp, status: 'repaired' }, { simulated: true }).log.result, 'skip', 'simulated re-inspection never closes a live row');
+  // --- review fixes ---------------------------------------------------------------------------
+  const pass = (snap2, seen0, rows0, map = DEFAULT_MAP) => {
+    const L = liveSignals(snap2, map, seen0.filter((k) => k.startsWith('cond:')));
+    return reconcile({ ...L, seen: seen0, rows: rows0, anchors: ANCHORS, at: T0 });
+  };
+  // more than 300 events still listed by the server never re-fire
+  const many350 = Array.from({ length: 350 }, (_, i) => ({ ...ev(`halo_01:b:impact:${350 - i}`, 'halo_01', 'impact'), first_received_at: `2026-10-13T03:${String(Math.floor((349 - i) / 60)).padStart(2, '0')}:${String((349 - i) % 60).padStart(2, '0')}.000Z` }));
+  const sBig = snap([soldier('halo_01', 'connected'), soldier('halo_02', 'connected')], many350);
+  const B1 = pass(sBig, [], {});
+  eq([B1.add.length, B1.add[0]?.row.live.count, B1.seen.length], [1, 350, 350], '350 events: one row, every key kept while listed');
+  const bigRows = rowsOf(B1.add);
+  const B2 = pass(sBig, B1.seen, bigRows);
+  const B3 = pass(sBig, B2.seen, bigRows);
+  eq([B2.add.length + B2.bump.length, B3.add.length + B3.bump.length], [0, 0], 'listed events are never processed twice');
+  eq([B1.add[0].row.live.first < B1.add[0].row.live.last, B1.add[0].row.live.last, B1.add[0].row.cause.includes('impact') || B1.add[0].row.cause.includes('충격')], [true, '2026-10-13T03:05:49.000Z', true], 'several events at once: first = oldest, last = newest');
+  ok(reconcile({ signals: [], seen: [...Array.from({ length: 320 }, (_, i) => `ev:gone${i}`)], rows: {}, anchors: ANCHORS }).seen.length === 300, 'keys the server no longer lists are capped at 300');
+  // an unknown state (lost / waiting / stale) keeps an episode running
+  const fRows = rowsOf(pass(snap([soldier('halo_01', 'connected', { imu: 'unavailable' })]), [], {}).add);
+  const F1seen = ['cond:fault:halo_01'];
+  const F2 = pass(snap([soldier('halo_01', 'lost', { imu: 'unavailable' })]), F1seen, fRows);
+  ok(F2.seen.includes('cond:fault:halo_01'), 'sensor episode held while the node is lost');
+  const F3 = pass(snap([soldier('halo_01', 'connected', { imu: 'unavailable' })]), F2.seen.filter((k) => k !== 'cond:link:halo_01'), fRows);
+  eq([F3.add.length, F3.bump.length], [0, 0], 'same sensor failure after a link blip: no new row, no count');
+  const H1 = pass(snap([], [], [env({ air_temperature_c: 36 })]), [], {});
+  const H2 = pass(snap([], [], [env({ air_temperature_c: 36 }, true)]), H1.seen, rowsOf(H1.add));
+  ok(H2.seen.includes('cond:heat:env_01') && H2.seen.includes('cond:shock:env_01') === false, 'heat episode held while the environment node is stale');
+  const H3 = pass(snap([], [], [env({ air_temperature_c: 36 })]), H2.seen, rowsOf(H1.add));
+  eq([H3.add.length, H3.bump.length], [0, 0], 'heat after a stale gap: no new row, no count');
+  // a server restart (waiting) keeps the link episode; reconnecting clears the row
+  const lnkRows = rowsOf(pass(snap([soldier('halo_02', 'lost')]), [], {}).add);
+  const W1 = pass(snap([{ ...soldier('halo_02', 'waiting'), payload: null, data_stale: true }]), ['cond:link:halo_02'], lnkRows);
+  ok(W1.seen.includes('cond:link:halo_02') && !W1.clear.length, 'waiting after a restart: link episode kept, nothing cleared');
+  const W2 = pass(snap([soldier('halo_02', 'connected')]), W1.seen, lnkRows);
+  eq(W2.clear.length, 1, 'node connected again: link row cleared');
+  // remapped / unmapped while lost: the old equipment's link row still clears
+  const W3 = pass(snap([soldier('halo_02', 'connected')]), [], lnkRows, { halo_02: '' });
+  eq(W3.clear.map((x) => x.model), ['hailo-Legacy'], 'unmapped node: its open link row clears anyway when it reports');
+  // a link row the technician acted on stays
+  const acted = { 'hailo-Legacy': lnkRows['hailo-Legacy'].map((r) => ({ ...r, forceReplace: true })) };
+  eq(pass(snap([soldier('halo_02', 'connected')]), [], acted).clear.length, 0, 'switched to replacement: not auto-closed');
+  // events of an unmapped node are marked handled: mapping it later starts from new signals
+  const U1 = pass(snap([soldier('halo_02', 'connected')], [ev('halo_02:b:impact:9', 'halo_02', 'impact', 'resolved')]), [], {}, { halo_02: '' });
+  ok(U1.seen.includes('ev:halo_02:b:impact:9') && !U1.add.length, 'unmapped node: event key recorded, no row');
+  eq(pass(snap([soldier('halo_02', 'connected')], [ev('halo_02:b:impact:9', 'halo_02', 'impact', 'resolved')]), U1.seen, {}).add.length, 0, 'mapping it afterwards does not import its past');
+  // engine follow-ups
+  const impDone = applyFeedback(imp, { result: 'done' }, { modelKey: 'hailo-Legacy', seq: 1, kb: KB['hailo-Legacy'] });
+  eq([impDone.defect.status, impDone.defect.fp, impDone.log.kind], ['closed', false, 'repair'], 'impact 점검 완료 closes at once (damage goes in as its own defect)');
+  eq(run('hailo-Legacy', [...sample('hailo-Legacy'), impDone.defect]).readiness.status, 'GO', 'closed impact inspection no longer limits');
+  const pf = repairPlan({ defect: flt, parts: PARTS['hailo-Modern'], kb: KB['hailo-Modern'], modelKey: 'hailo-Modern', seq: 1 });
+  ok(!pf.steps.some((x) => x.kind === 'work' && /재인가/.test(x.text)) && pf.steps.some((x) => x.kind === 'verify' && x.text.includes('관제 화면')), 'fault work never powers an isolated unit; the powered check is a verify step');
+  const pshk = repairPlan({ defect: shk, parts: PARTS.Turret, kb: KB.Turret, modelKey: 'Turret', seq: 1 });
+  ok(!pshk.steps.some((x) => /기판|배터리/.test(x.text) && x.kind === 'work'), 'impact on a leg: no board / battery check');
+  eq(pl.tools, [], 'signal monitoring needs no caliper');
+  const imported = { ...imp, source: 'import' };
+  const pim = repairPlan({ defect: imported, parts: PARTS['hailo-Legacy'], kb: KB['hailo-Legacy'], modelKey: 'hailo-Legacy', seq: 1 });
+  ok(!pim.steps.some((x) => /신뢰도/.test(x.text)), 'a re-imported signal row is still not an AI detection');
+  const fbi = applyFeedback(imported, { result: 'false' }, { modelKey: 'hailo-Legacy', seq: 1, kb: KB['hailo-Legacy'] });
+  eq([fbi.log.kind, run('hailo-Legacy', [fbi.defect]).counts.fp], ['clear', 0], 're-imported signal row closes as 이상 없음, not an AI misread');
 }
 
 // --- summary ---------------------------------------------------------------------------------

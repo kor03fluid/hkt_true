@@ -47,17 +47,23 @@ export function nodesOf(snap, config) {
 }
 
 /**
- * /api/state snapshot -> { signals, restored }.
+ * /api/state snapshot -> { signals, restored, held, skip }.
  *   signals: [{ key, kind, node, model, at, sim, cond, text }] for nodes mapped to a model.
  *     key: 'ev:<event_id>' for an event (handled once), 'cond:<kind>:<node>' for a condition (one row per
- *     episode: it starts when the condition appears and ends when it goes away).
+ *     episode: it starts when the condition appears and ends on a fresh report without it).
  *   restored: nodes that report normally again (connection_state connected), for the auto-clear.
+ *   held: running episodes whose node has no fresh data (lost, waiting after a server restart, stale
+ *     telemetry): unknown is not recovered, so the episode is kept instead of ending.
+ *   skip: event keys of unmapped nodes: marked as handled so mapping a node later starts from new signals.
  * active: condition keys of the episodes running now (the heat hysteresis keeps an episode until 34 °C).
  */
 export function liveSignals(snap, map = DEFAULT_MAP, active = []) {
   const out = [];
   const restored = [];
+  const held = [];
+  const skip = [];
   const on = new Set(active);
+  const hold = (key) => on.has(key) && held.push(key);
   const sim = (src) => (src || snap?.source) === 'simulation';
   const add = (kind, node, at, src, text, cond) => {
     const model = map[node];
@@ -71,11 +77,13 @@ export function liveSignals(snap, map = DEFAULT_MAP, active = []) {
     if (s.connection_state === 'lost') {
       const seen = hhmm(s.last_seen_at);
       add('link', node, s.last_seen_at, s.source, `${node} 통신 두절${seen ? ` (최종 수신 ${seen})` : ''} — 전원 꺼짐·무선 장애·송신 누락을 구분할 수 없어 원격 상태 미확보`, true);
-    }
+    } else if (s.connection_state !== 'connected') hold(`cond:link:${node}`); // 'waiting' (server restart, reboot): not back yet
     // sensor readings of a node that is not reporting are stale: only a live report counts
-    const st = s.connection_state === 'connected' && !s.data_stale ? s.payload?.sensor_status : null;
+    const fresh = s.connection_state === 'connected' && !s.data_stale;
+    const st = fresh ? s.payload?.sensor_status : null;
     const bad = st ? Object.keys(SENSOR_KO).filter((k) => st[k] === 'unavailable') : [];
     if (bad.length) add('fault', node, s.last_seen_at, s.source, `${node} 센서 상태 보고: ${bad.map((k) => SENSOR_KO[k]).join('·')} 읽기 실패 (unavailable)`, true);
+    else if (!fresh) hold(`cond:fault:${node}`);
   }
   for (const e of arr(snap?.events)) {
     if (e?.event_type !== 'impact' || !e.event_id || !e.node_id) continue;
@@ -83,17 +91,29 @@ export function liveSignals(snap, map = DEFAULT_MAP, active = []) {
     const sig = { key: `ev:${e.event_id}`, kind: 'impact', node: e.node_id, model: map[e.node_id], at: e.first_received_at || snap?.server_time || null, sim: sim(e.source), cond: false };
     sig.text = `${e.node_id} 충격 사건${t ? ` (${t})` : ''}${e.repeat_count > 1 ? ` ×${e.repeat_count}` : ''} — 충격은 관측일 뿐 손상 확정 아님`;
     if (sig.model) out.push(sig);
+    else skip.push(sig.key);
   }
+  const envFresh = new Set();
   for (const t of arr(snap?.telemetry)) {
     if (t?.packet_type !== 'environment' || !t.node_id || t.data_stale) continue;
+    envFresh.add(t.node_id);
     const p = t.payload || {};
     if (p.shock_detected === true) add('shock', t.node_id, t.received_at, t.source, `${t.node_id} 설치 지점 충격 감지 (${hhmm(t.received_at)}) — 설치물 고정부·다리 점검`, true);
     const temp = Number.isFinite(p.air_temperature_c) ? p.air_temperature_c : null;
     const hot = temp != null && (temp >= HEAT_ON || (on.has(`cond:heat:${t.node_id}`) && temp > HEAT_OFF));
     if (hot) add('heat', t.node_id, t.received_at, t.source, `${t.node_id} 공기 온도 ${temp.toFixed(1)}°C (기준 ${HEAT_ON}°C 이상) — 제어부 과열 이력 관찰`, true);
+    else if (temp == null && on.has(`cond:heat:${t.node_id}`)) held.push(`cond:heat:${t.node_id}`); // DHT11 read failure: unknown
   }
-  return { signals: out, restored };
+  // environment episodes of a node with no fresh telemetry (stale or gone) are kept
+  for (const key of on) {
+    const [, kind, node] = key.split(':');
+    if ((kind === 'shock' || kind === 'heat') && !envFresh.has(node)) held.push(key);
+  }
+  return { signals: out, restored, held, skip };
 }
+
+// a row the technician has acted on (switched, escalated, waiting for parts, re-worked) is never auto-closed
+const untouched = (r) => !r.forceReplace && !r.forceMonitor && !r.wait && !r.condemned && !(r.escalated > 0) && !(r.rework > 0);
 
 /**
  * Signals -> changes to the maintenance rows (pure; the caller writes them and assigns ids).
@@ -104,8 +124,9 @@ export function liveSignals(snap, map = DEFAULT_MAP, active = []) {
  * A new signal on equipment that already has an unresolved row of the same kind from the same node adds a
  * count to that row instead of a second marker.
  */
-export function reconcile({ signals = [], restored = [], seen = [], rows = {}, anchors = {}, at = new Date().toISOString() } = {}) {
+export function reconcile({ signals = [], restored = [], held = [], skip = [], seen = [], rows = {}, anchors = {}, at = new Date().toISOString() } = {}) {
   const next = new Set(arr(seen));
+  for (const key of arr(skip)) next.add(key);
   const add = [], bump = [], clear = [];
   const openRow = (model, kind, node) => arr(rows[model]).find((r) => r && r.source === 'live' && r.live?.kind === kind && r.live?.node === node && r.status !== 'closed');
   const pending = new Map(); // rows created in this pass, by model|kind|node
@@ -120,9 +141,14 @@ export function reconcile({ signals = [], restored = [], seen = [], rows = {}, a
     const open = openRow(sig.model, sig.kind, sig.node);
     if (open) bump.push({ model: sig.model, id: open.id, sig });
     else if (pending.has(pk)) {
-      const live = pending.get(pk).live;
+      // several events in one snapshot (it lists the newest first): keep the time span and the newest cause
+      const row = pending.get(pk), live = row.live, t = sig.at || at;
       live.count++;
-      live.last = sig.at || at;
+      if (t < live.first) live.first = t;
+      if (t >= live.last) {
+        live.last = t;
+        row.cause = sig.text;
+      }
     } else {
       const row = {
         part: anchor.part, type: rule.type, sev: rule.sev, p: anchor.p, n: anchor.n, t: anchor.t, size: anchor.size || 6,
@@ -134,30 +160,30 @@ export function reconcile({ signals = [], restored = [], seen = [], rows = {}, a
       add.push({ model: sig.model, row, sig });
     }
   }
-  // condition episodes that ended: forget them (the next occurrence is a new episode)
-  const now = new Set(signals.filter((s) => s.cond).map((s) => s.key));
+  // condition episodes that ended on a fresh report: forget them (the next occurrence is a new episode)
+  const now = new Set([...signals.filter((s) => s.cond).map((s) => s.key), ...arr(held)]);
+  for (const key of [...next]) if (key.startsWith('cond:') && !now.has(key)) next.delete(key);
+  // a node that reports again closes its open link rows on every equipment (also after a remap, an unmap or a
+  // server restart dropped the episode), unless the technician has already acted on the row
   const back = new Set(restored);
-  for (const key of [...next]) {
-    if (!key.startsWith('cond:') || now.has(key)) continue;
-    next.delete(key);
-    const [, kind, node] = key.split(':');
-    if (!RULES[kind]?.clears || !back.has(node)) continue; // e.g. node unmapped: no evidence it recovered
-    for (const [model, list] of Object.entries(rows)) {
-      for (const r of arr(list)) {
-        if (r?.source === 'live' && r.live?.kind === kind && r.live?.node === node && r.status === 'open') clear.push({ model, id: r.id, sig: { kind, node } });
-      }
+  for (const [model, list] of Object.entries(rows)) {
+    for (const r of arr(list)) {
+      const kind = r?.live?.kind;
+      if (r?.source === 'live' && RULES[kind]?.clears && back.has(r.live.node) && r.status === 'open' && untouched(r)) clear.push({ model, id: r.id, sig: { kind, node: r.live.node } });
     }
   }
-  // keep every running episode, and the newest event keys
-  const events = [...next].filter((k) => !k.startsWith('cond:'));
-  const drop = new Set(events.slice(0, Math.max(0, events.length - SEEN_MAX)));
+  // keep every running episode and every key the server still lists; forget the oldest of the rest
+  const current = new Set([...signals.map((s) => s.key), ...arr(skip), ...now]);
+  const old = [...next].filter((k) => !current.has(k));
+  const drop = new Set(old.slice(0, Math.max(0, old.length - SEEN_MAX)));
   return { seen: [...next].filter((k) => !drop.has(k)), add, bump, clear };
 }
 
 /**
  * Connection to the control server through the same-origin bridge path. status: 'off' (not started),
- * 'connecting', 'unavailable' (no bridge here, e.g. GitHub Pages), 'live', 'lost' (was live, retrying).
- * onState(snapshot) per received state; onStatus(status) on every change.
+ * 'connecting', 'unavailable' (no bridge here, e.g. GitHub Pages: stays quiet until asked again),
+ * 'upstream' (the bridge answers but the control server does not: retrying), 'live', 'lost' (was live,
+ * retrying). onState(snapshot) per received state; onStatus(status) on every change.
  */
 export class SquadLink {
   constructor({ base = 'squad/api/', onState = () => {}, onStatus = () => {} } = {}) {
@@ -172,7 +198,8 @@ export class SquadLink {
     this.timer = 0;
     this.poll = 0;
     this.want = false;
-    this.wasLive = false;
+    this.wasLive = false; // live at least once since start(): failures retry instead of giving up
+    this.gen = 0; // connection attempt; a stale attempt (stop / restart meanwhile) never touches the state
   }
   start(base) {
     if (base) this.base = base;
@@ -181,12 +208,16 @@ export class SquadLink {
   }
   stop() {
     this.want = false;
+    this.wasLive = false;
+    this.gen++;
     this._close();
+    this.snap = null;
     this._set('off');
   }
   /** Per frame: a stream that went quiet (the server sends a state every second) counts as lost. */
   tick(now = performance.now()) {
     if (this.status === 'live' && now - this.lastAt > 6000) {
+      this.gen++;
       this._close();
       this._set('lost');
       this._retry(3000);
@@ -224,36 +255,46 @@ export class SquadLink {
     this._set('live');
     this.onState(snap);
   }
+  /** A failed attempt: retry while the relay is known to exist, else go quiet. */
+  _fail(relay) {
+    if (this.wasLive) this._set('lost');
+    else this._set(relay ? 'upstream' : 'unavailable');
+    if (this.wasLive || relay) this._retry(3000);
+  }
   async _connect() {
     this._close();
     if (!this.want) return;
-    if (!this.wasLive) this._set('connecting');
+    const gen = ++this.gen;
+    if (!this.wasLive && this.status !== 'upstream') this._set('connecting');
+    let relay = false;
     try {
       const r = await fetch(this.base + 'config', { cache: 'no-store' });
+      relay = r.status >= 500; // 502 from squad_bridge.mjs / 5xx from the Vite proxy: the control server is down
       if (!r.ok) throw new Error(String(r.status));
       this.config = await r.json();
     } catch {
-      if (!this.want) return;
-      if (this.wasLive) {
-        this._set('lost');
-        this._retry(3000);
-      } else this._set('unavailable'); // no bridge: stay quiet until asked again
+      if (this.want && gen === this.gen) this._fail(relay);
       return;
     }
-    if (!this.want) return;
+    if (!this.want || gen !== this.gen) return;
     if (typeof EventSource === 'undefined') {
-      const get = () => fetch(this.base + 'state', { cache: 'no-store' }).then((r) => r.text()).then((t) => this._take(t)).catch(() => {});
+      const get = () => fetch(this.base + 'state', { cache: 'no-store' }).then((r) => r.text()).then((t) => gen === this.gen && this._take(t)).catch(() => {});
       get();
       this.poll = setInterval(get, 2000);
       return;
     }
     const es = (this.es = new EventSource(this.base + 'stream'));
-    es.addEventListener('state', (e) => this._take(e.data));
+    es.addEventListener('state', (e) => {
+      if (this.es === es) this._take(e.data);
+    });
     es.onerror = () => {
-      if (this.es !== es) return;
+      if (this.es !== es) {
+        es.close(); // an orphan of an earlier attempt: never let the browser keep reconnecting it
+        return;
+      }
+      this.gen++;
       this._close();
-      this._set(this.wasLive ? 'lost' : 'unavailable');
-      if (this.wasLive) this._retry(3000);
+      this._fail(true); // the config answered, so the relay exists
     };
   }
 }

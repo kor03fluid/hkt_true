@@ -30,15 +30,24 @@ const SANS = 'ui-sans-serif, system-ui, "Apple SD Gothic Neo", "Malgun Gothic", 
 const STEP_TIME = { remove: 2.2, install: 2.2, work: 3.5, verify: 3.5 }; // s per step while the procedure plays (else 3)
 const KIND = { repair: '정비', fp: '오탐', inspect: '재검사', reinspect: '재검사', add: '등록', import: '불러오기', remove: '삭제', live: '실시간', clear: '이상 없음' };
 const FIELDS = ['status', 'sev', 'origSev', 'size', 'escalated', 'wait', 'rework', 'condemned', 'fp', 'memo', 'monitored', 'forceReplace', 'forceMonitor']; // persisted per id
+// a SQUAD LINK signal row (live, or exported and imported again): a field signal, never an AI detection
+const signalRow = (r) => !!r && (r.source === 'live' || !!TYPES[r.type]?.signal);
 /** Result choices for an open defect (labels follow the planned action and the source). */
 function resultsFor(r, action, priority) {
+  if (r.type === 'impact' && action !== 'monitor' && !r.condemned) {
+    // an inspection: it is done (damage found goes in as its own defect) or nothing was found
+    const out = [['done', '점검 완료(손상은 별도 등록)']];
+    if (priority !== 'P1') out.push(['monitor', '관찰 전환']);
+    out.push(['false', '이상 없음(점검 종료)']);
+    return out;
+  }
   const out = [['done', action === 'monitor' ? '관찰 등록' : '완료']];
   // a condemned part is only ever replaced; a signal row has no size to reduce
   if (!r.condemned && !TYPES[r.type]?.signal) out.push(['partial', '부분 수리']);
   out.push(['fail', '수리 불가']);
   if (action !== 'replace' && !r.condemned) out.push(['replace', '교체 전환']);
   if (action !== 'monitor' && !r.condemned && priority !== 'P1') out.push(['monitor', '관찰 전환']); // P1 is never deferred
-  out.push(['false', r.source === 'manual' ? '등록 취소(결함 아님)' : r.source === 'live' ? '이상 없음(점검 종료)' : '오탐(결함 아님)']);
+  out.push(['false', r.source === 'manual' ? '등록 취소(결함 아님)' : signalRow(r) ? '이상 없음(점검 종료)' : '오탐(결함 아님)']);
   return out;
 }
 /** Storage key of a model: repo models by file, dropped ones by name + their part list. */
@@ -609,7 +618,9 @@ export class Maint {
   // ------------------------------------------------------------------ data
   _load() {
     try {
-      const v = JSON.parse(localStorage.getItem(STORE) || '{}');
+      const raw = localStorage.getItem(STORE) || '{}';
+      this._storeRaw = raw;
+      const v = JSON.parse(raw);
       return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
     } catch {
       return {};
@@ -617,10 +628,30 @@ export class Maint {
   }
   _save() {
     try {
-      localStorage.setItem(STORE, JSON.stringify(this.store));
+      const raw = JSON.stringify(this.store);
+      localStorage.setItem(STORE, raw);
+      this._storeRaw = raw;
     } catch {
       /* storage full or blocked: the session keeps working */
     }
+  }
+  /** Another tab of the viewer wrote the store (both follow the same live stream): take its version first. */
+  _syncStore() {
+    let changed = false;
+    try {
+      if ((localStorage.getItem(STORE) || '{}') !== this._storeRaw) {
+        this.store = this._load();
+        changed = true;
+      }
+      const sq = localStorage.getItem(STORE_SQUAD);
+      if (sq != null && sq !== this._squadRaw) {
+        this.squad = this._loadSquad();
+        changed = true;
+      }
+    } catch {
+      /* storage blocked: this tab's copy is all there is */
+    }
+    return changed;
   }
   _saveBy(by) {
     this.by = by;
@@ -679,7 +710,8 @@ export class Maint {
     }
   }
 
-  _recompute() {
+  /** opts.body = false: refresh the head, fleet and CTA but leave the panel body (a form being typed in) alone. */
+  _recompute({ body = true } = {}) {
     if (!this.def) return;
     this.parts = this._partsFor(this.def);
     const codes = new Set(this.parts.map((p) => p.code));
@@ -710,7 +742,13 @@ export class Maint {
       if (this.hp.to !== this.report.health || changed) this._animHealth();
       this.lastReady = rd;
     }
-    this._render();
+    if (body) this._render();
+    else {
+      this._renderHead();
+      this._renderLive();
+      this._renderFleet();
+      this._renderNext();
+    }
     this.showPart(this.scene.sel);
     if (changed) this._payoff(changed, rd);
   }
@@ -786,7 +824,7 @@ export class Maint {
     const o = {};
     for (const k of FIELDS) if (d[k] !== undefined) o[k] = d[k];
     st.overrides[d.id] = o;
-    if (log) st.history.push({ part: d.part, id: d.id, ...log, closed: d.status === 'closed' && !d.fp });
+    if (log) st.history.push({ part: d.part, id: d.id, ...log, closed: d.status === 'closed' && !d.fp && !signalRow(d) });
     st.seq++;
     this._save();
     this._recompute();
@@ -796,7 +834,9 @@ export class Maint {
   _loadSquad() {
     let v = null;
     try {
-      v = JSON.parse(localStorage.getItem(STORE_SQUAD) || 'null');
+      const raw = localStorage.getItem(STORE_SQUAD);
+      this._squadRaw = raw;
+      v = JSON.parse(raw || 'null');
     } catch {
       v = null;
     }
@@ -805,20 +845,28 @@ export class Maint {
   }
   _saveSquad() {
     try {
-      localStorage.setItem(STORE_SQUAD, JSON.stringify(this.squad));
+      const raw = JSON.stringify(this.squad);
+      localStorage.setItem(STORE_SQUAD, raw);
+      this._squadRaw = raw;
     } catch {
       /* ignore */
     }
   }
   /** Same-origin bridge path first (squad_bridge.mjs / Vite proxy); when the user asks, also the default local bridge. */
   _liveConnect(user) {
+    if (user && location.protocol === 'file:') {
+      // the bridge does not answer Origin 'null' (any site's sandboxed frame sends it too)
+      this.toast('파일로 연 화면은 연결할 수 없습니다 — node tools/squad_bridge.mjs 실행 후 http://localhost:8095/#maint 로 여세요', 4200);
+      return;
+    }
     let here = false;
     try {
       here = location.origin === new URL(BRIDGE).origin;
     } catch {
       /* file:// */
     }
-    this.liveTry = user && !here ? [BRIDGE] : [];
+    const last = this.liveBase && this.liveBase !== 'squad/api/' ? this.liveBase : null;
+    this.liveTry = user && !here ? [...new Set([last || BRIDGE, BRIDGE])] : last ? [last] : [];
     this.liveUser = !!user;
     this.link.start('squad/api/');
   }
@@ -827,8 +875,10 @@ export class Maint {
       this.link.start(this.liveTry.shift());
       return;
     }
+    if (st === 'live') this.liveBase = this.link.base;
     if (st === 'lost') this.toast('SQUAD LINK 연결 끊김 — 재연결 중', 2600);
-    else if (st === 'live' && this.liveWas === 'lost') this.toast('SQUAD LINK 다시 연결됨', 2200);
+    else if (st === 'upstream' && this.liveWas !== 'upstream') this.toast('중계 서버는 있지만 SQUAD LINK 관제 서버가 응답하지 않습니다 — 재시도 중', 3200);
+    else if (st === 'live' && (this.liveWas === 'lost' || this.liveWas === 'upstream')) this.toast('SQUAD LINK 연결됨', 2200);
     else if (st === 'unavailable' && this.liveUser) this.toast('SQUAD LINK 중계 서버를 찾지 못했습니다 (tools/squad_bridge.mjs)', 3200);
     if (st === 'live' || st === 'unavailable') this.liveUser = false;
     this.liveWas = st;
@@ -837,13 +887,15 @@ export class Maint {
   }
   /** A control-server snapshot: signals -> inspection rows of the mapped equipment (only when something changed). */
   _onSquad(snap) {
+    const synced = this._syncStore();
     const map = this.squad.map;
     let res;
     try {
-      const { signals, restored } = liveSignals(snap, map, this.squad.seen.filter((k) => k.startsWith('cond:')));
+      const { signals, restored, held, skip } = liveSignals(snap, map, this.squad.seen.filter((k) => k.startsWith('cond:')));
+      const keys = new Set([...Object.values(map).filter(Boolean), ...this.scene.models.map((m) => m.key).filter((k) => k && !k.startsWith('local:'))]);
       const rows = {};
-      for (const key of new Set(Object.values(map).filter(Boolean))) rows[key] = this._rowsFor(key);
-      res = reconcile({ signals, restored, seen: this.squad.seen, rows, anchors: ANCHORS, at: new Date().toISOString() });
+      for (const key of keys) rows[key] = this._rowsFor(key);
+      res = reconcile({ signals, restored, held, skip, seen: this.squad.seen, rows, anchors: ANCHORS, at: new Date().toISOString() });
     } catch (e) {
       console.error('SQUAD LINK reconcile failed', e);
       return;
@@ -854,6 +906,7 @@ export class Maint {
       this._saveSquad();
     }
     if (res.add.length || res.bump.length || res.clear.length) this._applyLive(res);
+    else if (synced) this._recompute({ body: false });
     this._renderLive();
     this._renderFleet();
   }
@@ -875,11 +928,19 @@ export class Maint {
       const st = this._st(model);
       const row = st.added.find((r) => r.id === id);
       if (!row?.live) continue;
+      const t = sig.at || at;
       row.live.count = (row.live.count || 1) + 1;
-      row.live.last = sig.at || at;
-      row.cause = sig.text;
-      st.history.push({ at, kind: 'live', id, part: row.part, wo: '', by: '', text: `실시간 신호 반복 (${row.live.count}회) — ${sig.text}` });
-      notes.push(`${sig.node} ${RULES[sig.kind].ko} 반복 ${row.live.count}회 → #${id}`);
+      if (t < (row.live.first || t)) row.live.first = t;
+      if (t >= (row.live.last || '')) {
+        row.live.last = t;
+        row.cause = sig.text;
+      }
+      // a new signal on a row that waits for inspection or is only watched needs a fresh look
+      const ov = st.overrides[id] || {};
+      const reopen = ov.status === 'repaired' || !!ov.monitored;
+      if (reopen) st.overrides[id] = { ...ov, status: 'open', monitored: null };
+      st.history.push({ at, kind: 'live', id, part: row.part, wo: '', by: '', text: `실시간 신호 반복 (${row.live.count}회)${reopen ? ' — 재발, 다시 점검' : ''} — ${sig.text}` });
+      notes.push(`${sig.node} ${RULES[sig.kind].ko} 반복 ${row.live.count}회 → #${id}${reopen ? ' 다시 점검' : ''}`);
     }
     for (const { model, id, sig } of clear) {
       const st = this._st(model);
@@ -890,9 +951,10 @@ export class Maint {
       st.history.push({ at, kind: 'clear', id, part: row.part, wo: '', by: '', text: `${sig.node} 통신 복구 — 점검 불필요, 자동 종료` });
       notes.push(`${sig.node} 통신 복구 → #${id} 자동 종료`);
     }
-    for (const model of new Set([...add, ...bump, ...clear].map((x) => x.model))) this._st(model).seq++;
+    const models = new Set([...add, ...bump, ...clear].map((x) => x.model));
+    for (const model of models) this._st(model).seq++;
     this._save();
-    this._recompute();
+    this._recompute({ body: models.has(this.key) }); // other equipment only: keep the panel body (and any input) as is
     for (const id of fresh) this.popAt.set(id, nowS());
     if (notes.length && this.on) this.toast(`실시간 · ${notes[0]}${notes.length > 1 ? ` 외 ${notes.length - 1}건` : ''}`, 3600);
   }
@@ -927,13 +989,14 @@ export class Maint {
       title = [...this._liveNodes().map((n) => `${n.node} → ${n.model ? this._modelName(n.model) : '연결 안 함'} (${n.ko})`), '읽기 전용 — 관제 서버로는 아무것도 보내지 않습니다'].join('\n');
       btn = this.liveMapOpen ? '닫기' : '연결 설정';
     } else if (st === 'connecting') text = 'SQUAD LINK 연결 중…';
+    else if (st === 'upstream') text = '중계 서버 연결됨 · SQUAD LINK 관제 서버 응답 없음 — 재시도 중';
     else if (st === 'lost') {
       const t = snap?.server_time ? new Date(snap.server_time) : null;
       text = `SQUAD LINK 연결 끊김 — 재연결 중${t && !Number.isNaN(t.getTime()) ? ` (마지막 수신 ${pad2(t.getHours())}:${pad2(t.getMinutes())}:${pad2(t.getSeconds())})` : ''}`;
     } else {
       text = '실시간 연동 꺼짐 — SQUAD LINK 중계 서버 없음';
       btn = '연결';
-      title = 'SQUAD LINK 관제 서버를 실시간으로 따라가려면 node tools/squad_bridge.mjs 를 실행하고 http://localhost:8095/#maint 를 여세요 (이 화면에서 연결을 누르면 localhost:8095 를 시도합니다)';
+      title = 'SQUAD LINK 관제 서버를 실시간으로 따라가려면 node tools/squad_bridge.mjs 를 실행하고 http://localhost:8095/#maint 를 여세요 (GitHub Pages 화면에서는 연결을 누르면 localhost:8095 를 시도합니다)';
     }
     const html = `<i></i><span class="lv-t">${text}</span>${btn ? `<button data-live="${st === 'live' ? 'map' : 'connect'}" data-air>${btn}</button>` : ''}`;
     if (html !== this._liveHtml || this.$live.dataset.st !== st) {
@@ -1244,11 +1307,11 @@ export class Maint {
     if (by !== this.by) this._saveBy(by);
     const d = out.defect;
     const msg = d.monitored && d.status === 'open' && f.result === 'done'
-      ? `#${r.id} 관찰 등록 — 다음 정기 점검 시 재측정`
+      ? `#${r.id} 관찰 등록 — 다음 정기 점검 시 ${signalRow(r) ? '재확인' : '재측정'}`
       : {
-          done: `#${r.id} 정비 완료 — 검사 대기`,
+          done: d.status === 'closed' ? `#${r.id} 점검 완료 — 손상은 별도 결함으로 등록` : `#${r.id} 정비 완료 — 검사 대기`,
           partial: `#${r.id} 부분 수리 — 심각도 ${SEVERITY[d.sev]?.ko || d.sev}`,
-          false: r.source === 'manual' ? `#${r.id} 등록 취소 — 결함 아님` : r.source === 'live' ? `#${r.id} 이상 없음 — 점검 종료` : `#${r.id} 오탐 처리 — AI 재학습 데이터로 기록`,
+          false: r.source === 'manual' ? `#${r.id} 등록 취소 — 결함 아님` : signalRow(r) ? `#${r.id} 이상 없음 — 점검 종료` : `#${r.id} 오탐 처리 — AI 재학습 데이터로 기록`,
         }[f.result] || out.log?.text || '정비 결과 등록';
     this.toast(msg, 2600);
     this._resetForm();
@@ -1465,6 +1528,13 @@ export class Maint {
           found: typeof raw.found === 'string' ? raw.found : today(), added: at,
           source: 'import', status: 'open', escalated: 0, wait: null, rework: 0, condemned: false, fp: false,
         };
+        // an exported SQUAD LINK row stays a field signal (no AI wording); its key is dropped so it never
+        // stands in for the server's event in the seen list
+        const lv = raw.source === 'live' && raw.live && typeof raw.live === 'object' ? raw.live : null;
+        if (lv && TYPES[raw.type]?.signal && RULES[lv.kind]) {
+          row.source = 'live';
+          row.live = { kind: lv.kind, node: String(lv.node || ''), sim: !!lv.sim, count: Math.max(1, Math.floor(+lv.count) || 1), first: String(lv.first || at), last: String(lv.last || at) };
+        }
         if (isVec(raw.n)) row.n = raw.n.map(Number);
         if (isVec(raw.t)) row.t = raw.t.map(Number);
         if (+raw.depth > 0) row.depth = +raw.depth;
@@ -1545,7 +1615,7 @@ export class Maint {
       defects: this._exportRows(),
       history: this._hist(),
       report: rep,
-      aiFeedback: this.rows.filter((r) => r.fp && r.source !== 'manual' && r.source !== 'live').map((r) => ({ id: r.id, part: r.part, type: r.type, sev: r.origSev || r.sev, p: r.p, n: r.n, conf: r.conf ?? null, source: r.source, label: '오탐 (결함 아님)' })),
+      aiFeedback: this.rows.filter((r) => r.fp && r.source !== 'manual' && !signalRow(r)).map((r) => ({ id: r.id, part: r.part, type: r.type, sev: r.origSev || r.sev, p: r.p, n: r.n, conf: r.conf ?? null, source: r.source, label: '오탐 (결함 아님)' })),
     };
     download(`${fileKey(this.key)}-maintenance-${today()}.json`, JSON.stringify(data, null, 2));
     this.toast('정비 기록을 JSON으로 저장했습니다');
@@ -1555,11 +1625,19 @@ export class Maint {
     if (!confirm(`${name}의 정비 이력·추가 결함·조치 상태를 모두 지웁니다. 계속할까요?`)) return;
     delete this.store[this.key];
     this._save();
+    // conditions still running on nodes mapped here come back as new rows on the next snapshot
+    const nodes = new Set(Object.entries(this.squad.map).filter(([, m]) => m === this.key).map(([n]) => n));
+    const seen = this.squad.seen.filter((k) => !(k.startsWith('cond:') && nodes.has(k.split(':')[2])));
+    if (seen.length !== this.squad.seen.length) {
+      this.squad.seen = seen;
+      this._saveSquad();
+    }
     for (const k of [...this.checks.keys()]) if (k.startsWith(this.key + '|')) this.checks.delete(k);
     this.selectDefect(null);
     this.scan = 'done';
     this._recompute();
     this._startScan('full');
+    if (this.link.snap) this._onSquad(this.link.snap);
     this.toast(`${name}: 초기화했습니다`);
   }
 
@@ -1572,7 +1650,8 @@ export class Maint {
     return !!r && r.status === 'open' && !!r.monitored && this.report?.defects[r.id]?.action === 'monitor';
   }
   _statusKo(r) {
-    return r.fp ? (r.source === 'live' ? '이상 없음' : '오탐') : STATUS[r.status]?.ko || r.status;
+    if (r.status === 'closed' && !r.fp && r.type === 'impact') return '점검 완료';
+    return r.fp ? (signalRow(r) ? '이상 없음' : '오탐') : STATUS[r.status]?.ko || r.status;
   }
   _confText(r) {
     if (r.source === 'manual') return '수동 등록';
@@ -1816,6 +1895,10 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     if (!this.on) return;
     const b = this.$body;
     const top = b.scrollTop;
+    // a field being typed in survives the rebuild (its value lives in this.form), so keys never fall through
+    // to the global shortcuts (M, arrows, Space, Delete)
+    const a = document.activeElement;
+    const keep = a && b.contains(a) && a.dataset?.f && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) ? { f: a.dataset.f, s: a.selectionStart, e: a.selectionEnd } : null;
     this._netKey = null;
     b.innerHTML = !this.report
       ? '<p class="mt-empty">모델을 불러오는 중입니다.</p>'
@@ -1827,6 +1910,18 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
             ? this._htmlHistory()
             : this._htmlDefects();
     b.scrollTop = resetScroll ? 0 : top;
+    if (keep) {
+      const el = b.querySelector(`[data-f="${CSS.escape(keep.f)}"]`);
+      if (el) {
+        el.focus({ preventScroll: true });
+        try {
+          if (keep.s != null) el.setSelectionRange(keep.s, keep.e);
+        } catch {
+          /* number inputs have no selection */
+        }
+        return;
+      }
+    }
     b.querySelector(this.tab === 'repair' ? '.mt-step.cur' : '.mt-row.sel')?.scrollIntoView({ block: 'nearest' });
   }
 
@@ -2014,7 +2109,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     return head + acc + safety + note + steps + det + this._htmlForm(r, plan);
   }
   _htmlForm(r, plan) {
-    if (r.status === 'closed') return `<div class="mt-form done"><p>${r.fp ? (r.source === 'manual' ? '등록 취소 — 결함 아님' : r.source === 'live' ? '이상 없음 — 실시간 신호 항목 종료' : '오탐 처리 — AI 재학습 데이터로 기록됨') : '해결 — 재검사 합격'}</p></div>`;
+    if (r.status === 'closed') return `<div class="mt-form done"><p>${r.fp ? (r.source === 'manual' ? '등록 취소 — 결함 아님' : signalRow(r) ? '이상 없음 — 실시간 신호 항목 종료' : '오탐 처리 — AI 재학습 데이터로 기록됨') : r.type === 'impact' ? '점검 완료 — 손상 발견 시 별도 결함으로 등록' : '해결 — 재검사 합격'}</p></div>`;
     if (r.status === 'repaired') {
       if (r.source === 'sample') {
         return `<div class="mt-form open insp"><p>정비 완료 — 검사 대기${this._holds(r.id) ? ' · 재검사 합격 전 운용 금지' : ''}</p><button class="mt-submit" data-act="reinspect" data-air${this.scan === 'running' ? ' disabled' : ''}>AI 재검사</button><small>시뮬레이션 재검사 — 예시 결함에만 사용합니다</small></div>`;
@@ -2028,7 +2123,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     return `<div class="mt-form${this.formOpen ? ' open' : ''}" data-res="${esc(f.result)}">
       <button class="mt-form-bar" data-act="form" data-air>정비 결과 등록 <span>${this.formOpen ? '▾' : '▴'}</span></button>
       <div class="mt-form-body">
-        ${this._watched(r) ? `<p class="mt-mon">관찰 등록됨 (${esc(stamp(r.monitored))}) — 다음 정기 점검 때 다시 측정합니다</p>` : ''}
+        ${this._watched(r) ? `<p class="mt-mon">관찰 등록됨 (${esc(stamp(r.monitored))}) — 다음 정기 점검 때 다시 ${signalRow(r) ? '확인' : '측정'}합니다</p>` : ''}
         <div class="mt-radios">${resultsFor(r, plan.action, plan.priority).map(([v, l]) => `<label data-air><input type="radio" name="mt-res" value="${v}"${f.result === v ? ' checked' : ''} />${l}</label>`).join('')}</div>
         <div class="mt-grid">
           <label class="f-fail">사유<select data-f="reason"><option value="capability"${f.reason !== 'supply' ? ' selected' : ''}>능력 부족 → 상급 정비 의뢰</option><option value="supply"${f.reason === 'supply' ? ' selected' : ''}>부품 없음 → 보급 대기</option></select></label>
@@ -2289,7 +2384,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     const S = SEVERITY[r.sev] || SEVERITY.mid, T = TYPES[r.type] || { ko: r.type, measure: '크기' };
     const closed = r.status === 'closed';
     const l3 = closed
-      ? r.fp ? (r.source === 'live' ? '이상 없음 (점검 종료)' : '오탐 처리 (결함 아님)') : '해결 — 재검사 합격'
+      ? r.fp ? (signalRow(r) ? '이상 없음 (점검 종료)' : '오탐 처리 (결함 아님)') : r.type === 'impact' ? '점검 완료' : '해결 — 재검사 합격'
       : [`${a.priority || ''} ${PRIORITY[a.priority]?.ko || ''}`.trim(), actionKo(r, a.action), LEVELS[a.level]?.ko, r.status === 'repaired' ? '검사 대기' : ''].filter(Boolean).join(' · ');
     const l4 = r.status === 'open' ? '수리 절차 보기 ›' : r.status === 'repaired' ? (r.source === 'sample' ? 'AI 재검사 ›' : '검사 결과 입력 ›') : '';
     const lines = [

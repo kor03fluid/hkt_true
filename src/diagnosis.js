@@ -62,8 +62,13 @@ const WORK = {
     '습기·이종금속 접촉 원인 제거'],
   impact: ['충격 부위와 주변 균열·찍힘·변형 육안 점검 (확대경, 사진 기록)', '내부 기판·배터리 고정 상태와 커넥터 체결 확인',
     '손상 발견 시 해당 결함으로 별도 등록 (결함 추가) — 없으면 「이상 없음」 처리'],
-  fault: ['전원 재인가 후 기동·상태 표시 확인', '커넥터 체결·배선 도통 점검 (멀티미터)', '센서·모듈 재장착 — 같은 증상 반복 시 교체 검토'],
+  // power is isolated during the work: the powered check (sensor status back to normal) is the verify step after RESTORE
+  fault: ['커넥터 체결·배선 도통 점검 (멀티미터, 전원 차단 상태)', '센서·모듈 재장착', '같은 증상 반복 이력이면 모듈 교체 검토 (교체 전환)'],
 };
+// impact on a part without electronics (a leg, a frame): nothing inside to check
+const WORK_IMPACT_STRUCTURE = ['충격 부위와 주변 균열·찍힘·변형 육안 점검 (확대경, 사진 기록)', '체결부 풀림·유격 확인',
+  '손상 발견 시 해당 결함으로 별도 등록 (결함 추가) — 없으면 「이상 없음」 처리'];
+const VERIFY_SIGNAL = '조립·전원 재연결 후 관제 화면에서 해당 노드 상태 정상 보고 확인';
 const WORK_MONITOR = ['현 상태 측정·사진 기록', '재점검 시기 등록', '보수 전환 기준 기록 (예: 크기 20% 증가, 예시)'];
 const WORK_MONITOR_SIGNAL = ['신호 상태 기록 (관제 최종 수신 시각·사유)', '재점검 시기 등록', '보수 전환 기준 기록 (예: 같은 증상 2회 반복, 예시)'];
 const REPAIR_TOOLS = {
@@ -83,6 +88,8 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 // rounds x.5 up even when float error lands it at x.4999999 (e.g. 0.55 * 0.3 * 100)
 const round = (v) => Math.round(Number(v.toFixed(6)));
 const isHelmet = (code) => /^DH-/.test(code || '');
+// a SQUAD LINK signal row (live, or a live row exported and imported again): never an AI detection
+const isSignal = (d) => !!d && (d.source === 'live' || !!(TYPES[d.type] && TYPES[d.type].signal));
 const sevOf = (d) => (SEV_W[d && d.sev] ? d.sev : 'mid');
 const stateOf = (d) => (d.fp || d.status === 'closed' ? 'closed' : d.status === 'repaired' ? 'repaired' : 'open');
 const typeKo = (d) => (TYPES[d.type] ? TYPES[d.type].ko : d.type || '결함');
@@ -325,7 +332,7 @@ export function diagnose({ parts = [], defects = [], kb = null } = {}) {
 
   const counts = {
     open: open.length, high: 0, mid: 0, low: 0, repaired: repaired.length, closed: closed.length,
-    fp: closed.filter((d) => d.fp && d.source !== 'live').length, // AI misreads only (a live signal that checked out fine is not one)
+    fp: closed.filter((d) => d.fp && !isSignal(d)).length, // AI misreads only (a signal that checked out fine is not one)
     escalated: defects.filter((d) => stateOf(d) !== 'closed' && num(d.escalated, 0) > 0).length,
     supply: open.filter((d) => d.wait === 'supply').length, P1: 0, P2: 0, P3: 0,
   };
@@ -363,19 +370,21 @@ export function repairPlan({ defect, parts = [], kb = null, modelKey = '', seq =
   const fed = new Set([code, ...access].flatMap((c) => Object.keys(kbPart(kb, c).functions)));
   const fns = arr(kb && kb.functions);
   const checks = fns.filter((f) => fed.has(f.id)).map((f) => f.check).filter(Boolean);
-  const verify = uniq([VERIFY_DEFECT, ...checks, ...(access.length ? [VERIFY_REASSEMBLY] : [])]);
+  const verify = uniq([VERIFY_DEFECT, ...checks, ...(access.length ? [VERIFY_REASSEMBLY] : []), ...(defect.type === 'fault' ? [VERIFY_SIGNAL] : [])]);
 
   let work;
-  if (monitor) work = TYPES[defect.type]?.signal ? WORK_MONITOR_SIGNAL : WORK_MONITOR;
+  const signal = isSignal(defect);
+  if (monitor) work = signal ? WORK_MONITOR_SIGNAL : WORK_MONITOR;
   else if (action === 'replace') {
     work = [`예비품 형상·부품번호(${code}) 대조`, '예비품 장착 (위치·방향 확인)', '체결 (규정 토크, 기술교범 확인)'];
     if (drive) work.push('선회/고각 원점·캘리브레이션');
     if (code === 'HP-01L') work.push('설정·동작 모드 유지 확인');
-  } else work = WORK[defect.type] || WORK.dent;
+  } else if (defect.type === 'impact' && pk.role !== 'electronics') work = WORK_IMPACT_STRUCTURE;
+  else work = WORK[defect.type] || WORK.dent;
 
   const steps = [];
   const add = (kind, part, text) => steps.push({ id: 's' + (steps.length + 1), kind, part, text });
-  const confirm = defect.source === 'live'
+  const confirm = signal
     ? '실물 확인 — 실시간 신호는 관측일 뿐 손상 확정 아님 (이상 없으면 「이상 없음」 처리)'
     : `육안·계측으로 결함 확인 (AI 신뢰도 ${Math.round(num(defect.conf, 0) * 100)}%) — 결함 아니면 오탐 처리`;
   if (!monitor) {
@@ -392,12 +401,12 @@ export function repairPlan({ defect, parts = [], kb = null, modelKey = '', seq =
     add('install', null, RESTORE); // the powered checks below need the isolation undone
     verify.forEach((t) => add('verify', code, t));
   }
-  add('record', code, `${monitor ? '관찰 등록' : '정비 결과 기록'} — 작업지시 ${wo} · 소요 시간·측정값·사용 부품 정비 이력 등록`);
+  add('record', code, `${monitor ? '관찰 등록' : '정비 결과 기록'} — 작업지시 ${wo} · 소요 시간·${signal ? '확인 결과' : '측정값'}·사용 부품 정비 이력 등록`);
 
   const workMin = action === 'replace' ? pk.replace : action === 'repair' ? REPAIR_MIN[defect.type] || 25 : 5;
   const minutes = 5 + access.reduce((s, c) => s + kbPart(kb, c).remove * 2, 0) + workMin + 10;
 
-  const tools = monitor ? ['버니어 캘리퍼스'] : uniq([
+  const tools = monitor ? (signal ? [] : ['버니어 캘리퍼스']) : uniq([
     ...access.flatMap((c) => kbPart(kb, c).tools), ...pk.tools,
     ...(action === 'repair' ? REPAIR_TOOLS[defect.type] || [] : ['버니어 캘리퍼스']), '토크 드라이버',
   ]);
@@ -435,7 +444,12 @@ export function applyFeedback(defect, fb = {}, ctx = {}) {
     d.status = 'open';
     d.wait = null;
     d.monitored = fb.at || new Date().toISOString();
-    text = '관찰 등록 — 추적 점검 대상 유지 (다음 정기 점검 시 재측정)';
+    text = `관찰 등록 — 추적 점검 대상 유지 (다음 정기 점검 시 ${isSignal(defect) ? '재확인' : '재측정'})`;
+  } else if (result === 'done' && defect.type === 'impact') {
+    // the inspection itself is the job: damage found is registered as its own defect, so this closes now
+    d.status = 'closed';
+    d.wait = null;
+    text = '충격 부위 점검 완료 — 손상 발견 시 별도 결함으로 등록';
   } else if (result === 'done') {
     d.status = 'repaired';
     d.wait = null;
@@ -488,9 +502,9 @@ export function applyFeedback(defect, fb = {}, ctx = {}) {
     d.fp = true;
     kind = 'fp';
     // only an AI detection can be an AI misread; a manual entry is simply withdrawn, a field signal checked out fine
-    if (defect.source === 'live') kind = 'clear';
+    if (isSignal(defect)) kind = 'clear';
     text = defect.source === 'manual' ? '등록 취소 — 결함 아님 (수동 등록)'
-      : defect.source === 'live' ? '점검 결과 이상 없음 — 실시간 신호 항목 종료'
+      : isSignal(defect) ? '점검 결과 이상 없음 — 실시간 신호 항목 종료'
         : '오탐 판정 — AI 판독 오류 (재학습 데이터)';
   }
   if (fb.memo != null && fb.memo !== '') d.memo = fb.memo;
