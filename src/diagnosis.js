@@ -30,6 +30,8 @@ export const FUNC_STATUS = { ok: { ko: '정상', color: '#5be38a' }, watch: { ko
 export const READINESS = { GO: { ko: '운용 가능 (가동)', short: '가동', color: '#5be38a' }, LIMITED: { ko: '제한 운용 (부분 가동)', short: '부분 가동', color: '#ff9f43' }, NOGO: { ko: '운용 불가 (비가동)', short: '비가동', color: '#ff4d5e' } };
 export const STEP_KINDS = { prep: '준비', remove: '분해', work: '정비 작업', install: '조립', verify: '작동 점검', record: '기록' };
 export const NOTICE = '예시 데이터 포함 — 실제 점검·정비 결과가 아님';
+/** Display name of an action: the 'repair' of an impact signal is a hands-on inspection, not a repair. */
+export const actionKo = (defect, action) => (action === 'repair' && defect && defect.type === 'impact' ? '점검' : ACTIONS[action] ? ACTIONS[action].ko : action || '');
 export const DEFERRED = '이월 정비 (운용 영향 없음)';
 
 const TYPE_W = { crack: 1.0, fault: 0.85, deform: 0.8, corrosion: 0.7, dent: 0.6, impact: 0.6, wear: 0.55, scratch: 0.3 };

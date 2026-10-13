@@ -146,6 +146,31 @@ Turret은 B 베이스 / Y 회전축 / H 센서·시연 장치 / L 지지구조, 
   - 오탐 → AI 판독 오류로 기록 (직접 등록한 결함은 등록 취소)
 - 결과가 바뀔 때마다 부품 건강도 · 기능 · 장비 판정이 바로 다시 계산되고, **이력** 탭에 작업지시 번호, 정비자, 소요 시간과 예상 시간이 남습니다. **보고서**(인쇄용)와 **JSON 저장**으로 내보낼 수 있습니다.
 
+### 4. SQUAD LINK 실시간 연동 (읽기 전용)
+
+팀 관제 서버(CLIKA_1 `squad-link`)의 상태를 따라가며, 현장 신호를 **점검 항목**으로 바꿔 진단망에 넣습니다. 관제 서버로는 아무것도 보내지 않습니다(확인·해결·주입 불가).
+
+```
+node squad-link/server.mjs                         # 팀 관제 서버 (기본 8080, 가상 데이터)
+node tools/squad_bridge.mjs http://<관제서버>:8080   # 한 파일 뷰어 + 읽기 전용 중계 (8095)
+→ http://localhost:8095/#maint
+```
+
+개발 모드는 `SQUAD_URL=http://<관제서버>:8080 npm run dev` 로도 됩니다. 관제 서버에는 CORS가 없고, https 페이지(GitHub Pages)는 LAN의 http 서버를 읽을 수 없어서 중계 서버를 거칩니다. GitHub Pages나 한 파일 버전에서는 패널의 **연결** 버튼으로 `http://localhost:8095` 의 중계 서버에 붙을 수 있습니다(브라우저가 로컬 네트워크 접근 허용을 물을 수 있음).
+
+| 신호 | 노드 → 장비(기본) | 점검 항목 | 판정 영향 |
+|---|---|---|---|
+| 충격 사건 `impact` | halo_01 → hailo Modern, halo_02 → hailo Legacy | HP-01L 충격 감지(주의) — 실물 확인부터 | 점검 전 제한 운용 |
+| 센서 상태 `imu`·`heart_rate` = unavailable | 〃 | HP-01L 전자부 이상(주의) | 제한 운용 |
+| 통신 두절 `connection_state` = lost | 〃 | HP-01L 전자부 이상(경미) — 관찰 | 없음(원격 상태 미확보), 연결이 돌아오면 자동 종료 |
+| 설치 지점 충격 `shock_detected` | env_01 → Turret (설치 지점 가정) | L-01 다리 충격 감지(주의) | 점검 전 제한 운용 |
+| 고온 노출 공기 온도 ≥ 35 °C (34 °C 해제) | 〃 | B-02 제어부 전자부 이상(경미) — 관찰 | 없음 |
+
+- 신호는 **어디를 볼지**만 알려 줍니다. 데이터 규격대로 충격은 관측일 뿐 손상 확정이 아니고, 두절은 전원 꺼짐·무선 장애·송신 누락을 구분하지 못합니다. 그래서 실시간 항목은 실물 확인 단계로 시작하고, 정비자가 **이상 없음(점검 종료)** 또는 정비 결과로 닫습니다. AI 재검사 시뮬레이션으로는 닫히지 않습니다.
+- 같은 노드의 같은 신호가 반복되면 열린 항목에 횟수가 쌓입니다. 처리한 사건은 기억해서 새로고침해도 중복되지 않습니다.
+- 가상 데이터(`source: simulation`)는 항목·보고서에 **가상 데이터**로 표시합니다. 노드 → 장비 연결은 패널의 **연결 설정**에서 바꿉니다.
+- 점검 위치는 `tools/live_anchors_spec.json` → `python3 -I tools/place_defects.py --anchors` 로 부품 표면에 배치·검증합니다(`web/live_anchors.json`).
+
 ### 데이터 바꾸기
 
 | 파일 | 내용 |
@@ -154,10 +179,12 @@ Turret은 B 베이스 / Y 회전축 / H 센서·시연 장치 / L 지지구조, 
 | `tools/defects_spec.json` | 예시 결함의 대략 위치 → `python3 -I tools/place_defects.py` 로 표면에 정확히 배치 · 검증 |
 | `web/maintenance.json` | 정비 지식베이스: 기능, 부품별 중요도 · 역할 · 기능 연결 · 선행 분해 · 시간 · 공구 · 안전 |
 | `src/diagnosis.js` | 진단 규칙(위험도, 우선순위, 조치, 정비 단계, 판정, 수리 절차, 결과 반영) |
+| `src/squad.js` | SQUAD LINK 신호 → 점검 항목 규칙, 노드 → 장비 기본 연결 |
+| `web/live_anchors.json` | 실시간 신호별 점검 위치 (`tools/live_anchors_spec.json` 에서 생성) |
 
 실제 AI 판독 결과도 같은 형식의 JSON으로 **불러오기** 하면 그대로 표시됩니다(위치가 표면에서 떨어져 있으면 가장 가까운 표면으로 붙이고 거리를 알려 줍니다). 화면을 클릭해 결함을 직접 **추가**할 수도 있습니다.
 
-검증: `node tools/test_diagnosis.mjs` (진단 규칙 · 지식베이스 · 예시 판정), `python3 -I tools/place_defects.py --check` (결함 좌표).
+검증: `node tools/test_diagnosis.mjs` (진단 규칙 · 지식베이스 · 예시 판정 · 실시간 연동 규칙), `python3 -I tools/place_defects.py --check` (결함 좌표), `python3 -I tools/place_defects.py --anchors --check` (실시간 점검 위치).
 
 ## 마우스 · 키보드
 
@@ -180,13 +207,16 @@ tools/build_models.py    폴리곤 축소 · 16비트 패킹 · 좌표 검증
 tools/explode.json       부품별 분해 이동량 (mm)
 tools/parts_info.json    부품 이름 · 계열 · 설명
 tools/place_defects.py   예시 결함을 표면에 정확히 배치·검증 (tools/defects_spec.json → web/defects.json)
-tools/test_diagnosis.mjs 진단 규칙 · 지식베이스 · 예시 판정 테스트
+tools/test_diagnosis.mjs 진단 규칙 · 지식베이스 · 예시 판정 · 실시간 연동 테스트
+tools/squad_bridge.mjs   SQUAD LINK 읽기 전용 중계 + 한 파일 뷰어 제공 (http://localhost:8095/#maint)
+web/live_anchors.json    실시간 신호 점검 위치 (tools/live_anchors_spec.json → place_defects.py --anchors)
 web/defects.json         예시 결함 (STL 좌표)
 web/maintenance.json     예시 정비 지식베이스
 src/main.js              앱 루프, 손 오버레이, 제스처 → 동작, 이름표, UI
 src/scene.js             Three.js STL 렌더러: 분해, 부품 이동/회전, 선택(BVH 레이캐스트), X-ray, 단독 보기, 결함 셰이더 · 스캔 · 결함 초점 · 분해 절차 보기
 src/diagnosis.js         진단 엔진: 위험도 · 우선순위 · 조치 · 정비 단계 · 판정 · 수리 절차 · 결과 반영
-src/maint.js             AI 정비 모드 UI: 진단 패널, 결함 핀 · 설명, 수리 절차, 결과 등록, 이력 · 보고서
+src/maint.js             AI 정비 모드 UI: 진단 패널, 결함 핀 · 설명, 수리 절차, 결과 등록, 이력 · 보고서, 실시간 연동 표시
+src/squad.js             SQUAD LINK 연결(SSE) · 신호 → 점검 항목 규칙
 src/library.js           web/models 자동 탐색, 폴더 열기 / 드래그 앤 드롭 (STL + parts.json)
 src/handTracking.js      MediaPipe 래퍼 (HoloHand 그대로)
 src/gestureEngine.js     랜드마크 → 제스처 · 손 펴짐 · 손목 회전 (HoloHand 그대로)

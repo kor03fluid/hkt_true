@@ -14,7 +14,7 @@ import KB from '/web/maintenance.json';
 import ANCHORS from '/web/live_anchors.json';
 import {
   TYPES, SEVERITY, SOURCES, STATUS, ACTIONS, PRIORITY, LEVELS, PART_STATUS, FUNC_STATUS, READINESS, STEP_KINDS, NOTICE,
-  diagnose, repairPlan, applyFeedback, reinspect, assess,
+  diagnose, repairPlan, applyFeedback, reinspect, assess, actionKo,
 } from './diagnosis.js';
 import { clamp } from './utils.js';
 import { SquadLink, liveSignals, reconcile, nodesOf, DEFAULT_MAP, RULES } from './squad.js';
@@ -923,7 +923,7 @@ export class Maint {
     if (st === 'live' && snap) {
       const sim = snap.source === 'simulation';
       const nodes = this._liveNodes().filter((n) => n.model);
-      text = `SQUAD LINK 실시간 · <span class="${sim ? 'lv-sim' : 'lv-dev'}">${sim ? '가상 데이터' : '실장비'}</span>${nodes.map((n) => ` · ${esc(n.node)} <b style="color:${n.color}">${esc(n.ko)}</b>`).join('')}`;
+      text = `SQUAD LINK 실시간 · <span class="${sim ? 'lv-sim' : 'lv-dev'}">${sim ? '가상 데이터' : '실장비'}</span>${nodes.map((n) => ` · <span class="lv-n">${esc(n.node)} <b style="color:${n.color}">${esc(n.ko)}</b></span>`).join('')}`;
       title = [...this._liveNodes().map((n) => `${n.node} → ${n.model ? this._modelName(n.model) : '연결 안 함'} (${n.ko})`), '읽기 전용 — 관제 서버로는 아무것도 보내지 않습니다'].join('\n');
       btn = this.liveMapOpen ? '닫기' : '연결 설정';
     } else if (st === 'connecting') text = 'SQUAD LINK 연결 중…';
@@ -1316,7 +1316,8 @@ export class Maint {
     f.memo = '';
     const el = document.createElement('div');
     el.className = 'mt-float mt-add';
-    const opts = (table, cur) => Object.entries(table).map(([k, v]) => `<option value="${k}"${k === cur ? ' selected' : ''}>${esc(v.ko)}</option>`).join('');
+    // a manual entry is a physical defect with a size: the SQUAD LINK signal types are not offered
+    const opts = (table, cur) => Object.entries(table).filter(([, v]) => !v.signal).map(([k, v]) => `<option value="${k}"${k === cur ? ' selected' : ''}>${esc(v.ko)}</option>`).join('');
     el.innerHTML = `
       <div class="mf-h"><b>결함 추가</b><span>${esc(this._label(hit.code))}</span><button data-fa="x" title="취소 (Esc)">✕</button></div>
       <p class="mf-xyz">STL ${hit.p.map((v) => (+v).toFixed(2)).join(', ')} mm</p>
@@ -1468,6 +1469,7 @@ export class Maint {
         if (isVec(raw.t)) row.t = raw.t.map(Number);
         if (+raw.depth > 0) row.depth = +raw.depth;
         if (typeof raw.cause === 'string') row.cause = raw.cause;
+        if (raw.confirm === true) row.confirm = true; // e.g. an exported SQUAD LINK row: still starts with a hands-on check
         st.added.push(row);
         n++;
         if (key === this.key) res.ids.add(id);
@@ -1612,7 +1614,7 @@ export class Maint {
       .map((r, k) => {
         const a = rep.defects[r.id] || {};
         const extra = [this._escalation(a), r.condemned ? '불용 판정' : '', r.wait === 'supply' ? '보급 대기' : '', a.needsConfirm && r.status === 'open' ? '확인 필요' : ''].filter(Boolean).join(', ');
-        return `<tr class="${r.status}"><td>${k + 1}</td><td>${esc(r.id)}</td><td>${esc(this._label(r.part))}</td><td>${esc(T(r).ko)}</td><td>${esc(SEVERITY[r.sev]?.ko || r.sev)}</td><td>${T(r).measure ? `${esc(T(r).measure)} ${mm(r.size)} mm` : '—'}</td><td>${esc(this._confText(r))}</td><td>${esc(SOURCES[r.source]?.ko || r.source)}${r.live?.sim ? ' (가상)' : ''}${r.source === 'live' && r.cause ? `<br><small>${esc(r.cause)}</small>` : ''}</td><td>${r.status === 'closed' ? '—' : esc(`${a.priority || ''} ${PRIORITY[a.priority]?.ko || ''}`)}</td><td>${r.status === 'closed' ? '—' : esc(ACTIONS[a.action]?.ko || '')}</td><td>${r.status === 'closed' ? '—' : esc(LEVELS[a.level]?.ko || '')}</td><td>${esc(this._statusKo(r))}${extra ? `<br><small>${esc(extra)}</small>` : ''}</td></tr>`;
+        return `<tr class="${r.status}"><td>${k + 1}</td><td>${esc(r.id)}</td><td>${esc(this._label(r.part))}</td><td>${esc(T(r).ko)}</td><td>${esc(SEVERITY[r.sev]?.ko || r.sev)}</td><td>${T(r).measure ? `${esc(T(r).measure)} ${mm(r.size)} mm` : '—'}</td><td>${esc(this._confText(r))}</td><td>${esc(SOURCES[r.source]?.ko || r.source)}${r.live?.sim ? ' (가상)' : ''}${r.source === 'live' && r.cause ? `<br><small>${esc(r.cause)}</small>` : ''}</td><td>${r.status === 'closed' ? '—' : esc(`${a.priority || ''} ${PRIORITY[a.priority]?.ko || ''}`)}</td><td>${r.status === 'closed' ? '—' : esc(actionKo(r, a.action))}</td><td>${r.status === 'closed' ? '—' : esc(LEVELS[a.level]?.ko || '')}</td><td>${esc(this._statusKo(r))}${extra ? `<br><small>${esc(extra)}</small>` : ''}</td></tr>`;
       })
       .join('');
     const plans = rows
@@ -1624,7 +1626,7 @@ export class Maint {
         } catch {
           return '';
         }
-        return `<tr><td>${esc(p.wo)}</td><td>${esc(r.id)} ${esc(T(r).ko)}</td><td>${esc(ACTIONS[p.action]?.ko || p.action)}</td><td>${esc(LEVELS[p.level]?.ko || p.level)}</td><td>${p.minutes}분 (예시)</td><td>${esc(p.access.join(' → ') || '—')}</td><td>${p.steps.length}단계</td></tr>`;
+        return `<tr><td>${esc(p.wo)}</td><td>${esc(r.id)} ${esc(T(r).ko)}</td><td>${esc(actionKo(r, p.action))}</td><td>${esc(LEVELS[p.level]?.ko || p.level)}</td><td>${p.minutes}분 (예시)</td><td>${esc(p.access.join(' → ') || '—')}</td><td>${p.steps.length}단계</td></tr>`;
       })
       .join('');
     const history = hist
@@ -1692,6 +1694,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
       if (!node) return;
       this.squad.map[node] = e.target.value;
       this._saveSquad();
+      e.target.blur(); // hand the keyboard back (M / Enter / arrows)
       this.toast(`${node} → ${e.target.value ? this._modelName(e.target.value) : '연결 안 함'}`);
       if (this.link.snap) this._onSquad(this.link.snap);
     });
@@ -1992,7 +1995,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     const badge = r.status === 'closed' ? GREEN : r.status === 'repaired' ? BLUE : S.color;
     const head = `<div class="mt-wo">
       <div class="mt-wo1"><i class="mt-num" style="background:${badge};color:${inkOn(badge)}">${r.status === 'open' ? n : '✓'}</i><b>#${esc(r.id)} ${esc(T.ko)}</b><span class="mt-sev" style="color:${S.color}">${esc(S.ko)}</span><span class="mt-l2">${esc(this._label(r.part))}</span></div>
-      <div class="mt-wo2">작업지시 <b>${esc(plan.wo)}</b> · 예상 ${plan.minutes}분 (예시) · ${esc(LEVELS[plan.level]?.ko || plan.level)} · ${esc(ACTIONS[plan.action]?.ko || plan.action)} · <b style="color:${P.color || '#fff'}">${esc(pri)} ${esc(P.ko || '')}</b></div>
+      <div class="mt-wo2">작업지시 <b>${esc(plan.wo)}</b> · 예상 ${plan.minutes}분 (예시) · ${esc(LEVELS[plan.level]?.ko || plan.level)} · ${esc(actionKo(r, plan.action))} · <b style="color:${P.color || '#fff'}">${esc(pri)} ${esc(P.ko || '')}</b></div>
     </div>`;
     const acc = plan.access.length
       ? `<div class="mt-acc"><span class="lbl">분해 순서</span>${plan.access.map((c) => `<span class="chip">${esc(c)}</span>`).join('<i>→</i>')}<i>→</i><span class="chip tgt">${esc(plan.part)}</span></div>`
@@ -2287,7 +2290,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     const closed = r.status === 'closed';
     const l3 = closed
       ? r.fp ? (r.source === 'live' ? '이상 없음 (점검 종료)' : '오탐 처리 (결함 아님)') : '해결 — 재검사 합격'
-      : [`${a.priority || ''} ${PRIORITY[a.priority]?.ko || ''}`.trim(), ACTIONS[a.action]?.ko, LEVELS[a.level]?.ko, r.status === 'repaired' ? '검사 대기' : ''].filter(Boolean).join(' · ');
+      : [`${a.priority || ''} ${PRIORITY[a.priority]?.ko || ''}`.trim(), actionKo(r, a.action), LEVELS[a.level]?.ko, r.status === 'repaired' ? '검사 대기' : ''].filter(Boolean).join(' · ');
     const l4 = r.status === 'open' ? '수리 절차 보기 ›' : r.status === 'repaired' ? (r.source === 'sample' ? 'AI 재검사 ›' : '검사 결과 입력 ›') : '';
     const lines = [
       { text: `#${r.id} ${T.ko} · ${S.ko}`, font: `700 14px ${SANS}`, color: S.color, h: 18 },
