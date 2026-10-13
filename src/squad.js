@@ -63,11 +63,16 @@ export function liveSignals(snap, map = DEFAULT_MAP, active = []) {
   const held = [];
   const skip = [];
   const on = new Set(active);
-  const hold = (key) => on.has(key) && held.push(key);
+  const hold = (key) => {
+    if (on.has(key)) held.push(key);
+  };
   const sim = (src) => (src || snap?.source) === 'simulation';
   const add = (kind, node, at, src, text, cond) => {
     const model = map[node];
-    if (!model) return;
+    if (!model) {
+      if (cond) hold(`cond:${kind}:${node}`); // unmapped for a while: the condition did not stop, keep its episode
+      return;
+    }
     out.push({ key: cond ? `cond:${kind}:${node}` : null, kind, node, model, at: at || snap?.server_time || null, sim: sim(src), cond, text });
   };
   for (const s of arr(snap?.soldiers)) {
@@ -99,6 +104,7 @@ export function liveSignals(snap, map = DEFAULT_MAP, active = []) {
     envFresh.add(t.node_id);
     const p = t.payload || {};
     if (p.shock_detected === true) add('shock', t.node_id, t.received_at, t.source, `${t.node_id} 설치 지점 충격 감지 (${hhmm(t.received_at)}) — 설치물 고정부·다리 점검`, true);
+    else if (p.shock_detected !== false) hold(`cond:shock:${t.node_id}`); // null / missing: the sensor could not tell
     const temp = Number.isFinite(p.air_temperature_c) ? p.air_temperature_c : null;
     const hot = temp != null && (temp >= HEAT_ON || (on.has(`cond:heat:${t.node_id}`) && temp > HEAT_OFF));
     if (hot) add('heat', t.node_id, t.received_at, t.source, `${t.node_id} 공기 온도 ${temp.toFixed(1)}°C (기준 ${HEAT_ON}°C 이상) — 제어부 과열 이력 관찰`, true);
@@ -130,7 +136,9 @@ export function reconcile({ signals = [], restored = [], held = [], skip = [], s
   const add = [], bump = [], clear = [];
   const openRow = (model, kind, node) => arr(rows[model]).find((r) => r && r.source === 'live' && r.live?.kind === kind && r.live?.node === node && r.status !== 'closed');
   const pending = new Map(); // rows created in this pass, by model|kind|node
-  for (const sig of signals) {
+  // oldest first (the server lists events newest first): counts and history then follow time
+  const ordered = [...signals].sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')));
+  for (const sig of ordered) {
     const key = sig.key || `ev:${sig.kind}:${sig.node}:${sig.at}`;
     if (next.has(key)) continue;
     const rule = RULES[sig.kind];

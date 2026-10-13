@@ -913,15 +913,16 @@ export class Maint {
   _applyLive({ add, bump, clear }) {
     const at = new Date().toISOString();
     const name = (key) => this.scene.models.find((m) => m.key === key)?.name || key;
-    const notes = [], fresh = [];
+    const notes = [], fresh = [], bumped = new Map();
     for (const { model, row, sig } of add) {
       const st = this._st(model);
       const taken = new Set([...this._rowsFor(model).map((r) => r.id), ...st.removed, ...st.history.map((h) => h.id)]);
       row.id = this._newId('S', taken);
       st.added.push(row);
       const R = RULES[sig.kind];
-      st.history.push({ at, kind: 'live', id: row.id, part: row.part, wo: '', by: '', text: `실시간 신호 → 점검 항목 등록 — ${R.ko}${sig.sim ? ' (가상 데이터)' : ''}: ${sig.text}` });
-      notes.push(`${sig.node} ${R.ko} → ${name(model)} ${row.part} 점검 (#${row.id})`);
+      const n = row.live.count > 1 ? ` ${row.live.count}건` : '';
+      st.history.push({ at, kind: 'live', id: row.id, part: row.part, wo: '', by: '', text: `실시간 신호 → 점검 항목 등록 — ${R.ko}${n}${sig.sim ? ' (가상 데이터)' : ''}: ${row.cause}` });
+      notes.push(`${sig.node} ${R.ko}${n} → ${name(model)} ${row.part} 점검 (#${row.id})`);
       if (model === this.key) fresh.push(row.id);
     }
     for (const { model, id, sig } of bump) {
@@ -940,8 +941,9 @@ export class Maint {
       const reopen = ov.status === 'repaired' || !!ov.monitored;
       if (reopen) st.overrides[id] = { ...ov, status: 'open', monitored: null };
       st.history.push({ at, kind: 'live', id, part: row.part, wo: '', by: '', text: `실시간 신호 반복 (${row.live.count}회)${reopen ? ' — 재발, 다시 점검' : ''} — ${sig.text}` });
-      notes.push(`${sig.node} ${RULES[sig.kind].ko} 반복 ${row.live.count}회 → #${id}${reopen ? ' 다시 점검' : ''}`);
+      bumped.set(id, `${sig.node} ${RULES[sig.kind].ko} 반복 ${row.live.count}회 → #${id}${reopen || bumped.get(id)?.includes('다시 점검') ? ' 다시 점검' : ''}`);
     }
+    notes.push(...bumped.values()); // one note per row, with its final count
     for (const { model, id, sig } of clear) {
       const st = this._st(model);
       const row = st.added.find((r) => r.id === id);

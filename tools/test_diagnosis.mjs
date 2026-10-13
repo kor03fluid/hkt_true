@@ -515,6 +515,18 @@ console.log('SQUAD LINK');
   ok(!pim.steps.some((x) => /신뢰도/.test(x.text)), 'a re-imported signal row is still not an AI detection');
   const fbi = applyFeedback(imported, { result: 'false' }, { modelKey: 'hailo-Legacy', seq: 1, kb: KB['hailo-Legacy'] });
   eq([fbi.log.kind, run('hailo-Legacy', [fbi.defect]).counts.fp], ['clear', 0], 're-imported signal row closes as 이상 없음, not an AI misread');
+  // second check: unknown shock reading, temporary unmapping, several new events on an open row
+  const K1 = pass(snap([], [], [env({ shock_detected: true })]), [], {});
+  const K2 = pass(snap([], [], [env({ shock_detected: null, sensor_status: { dht11: 'ok', light: 'ok', shock: 'unavailable' } })]), K1.seen, rowsOf(K1.add));
+  ok(K2.seen.includes('cond:shock:env_01'), 'shock reading null (sensor could not tell): episode held');
+  const M1 = pass(snap([], [], [env({ air_temperature_c: 36 })]), [], {});
+  const M2 = pass(snap([], [], [env({ air_temperature_c: 36 })]), M1.seen, rowsOf(M1.add), { env_01: '' });
+  const M3 = pass(snap([], [], [env({ air_temperature_c: 36 })]), M2.seen, rowsOf(M1.add));
+  eq([M2.seen.includes('cond:heat:env_01'), M3.add.length + M3.bump.length], [true, 0], 'unmapped for a moment: the running heat episode is kept, no recount');
+  const openImp = rowsOf(pass(snap([], [ev('halo_01:b:impact:1', 'halo_01', 'impact')]), [], {}).add);
+  const evAt = (id, t) => ({ ...ev(id, 'halo_01', 'impact'), first_received_at: t });
+  const O1 = pass(snap([], [evAt('halo_01:b:impact:4', '2026-10-13T05:00:04.000Z'), evAt('halo_01:b:impact:3', '2026-10-13T05:00:03.000Z'), evAt('halo_01:b:impact:2', '2026-10-13T05:00:02.000Z')]), ['ev:halo_01:b:impact:1'], openImp);
+  eq(O1.bump.map((x) => x.sig.key), ['ev:halo_01:b:impact:2', 'ev:halo_01:b:impact:3', 'ev:halo_01:b:impact:4'], 'bumps follow event time (oldest first)');
 }
 
 // --- summary ---------------------------------------------------------------------------------
