@@ -527,6 +527,13 @@ console.log('SQUAD LINK');
   const evAt = (id, t) => ({ ...ev(id, 'halo_01', 'impact'), first_received_at: t });
   const O1 = pass(snap([], [evAt('halo_01:b:impact:4', '2026-10-13T05:00:04.000Z'), evAt('halo_01:b:impact:3', '2026-10-13T05:00:03.000Z'), evAt('halo_01:b:impact:2', '2026-10-13T05:00:02.000Z')]), ['ev:halo_01:b:impact:1'], openImp);
   eq(O1.bump.map((x) => x.sig.key), ['ev:halo_01:b:impact:2', 'ev:halo_01:b:impact:3', 'ev:halo_01:b:impact:4'], 'bumps follow event time (oldest first)');
+  // third check: impact jobs switched to replacement, closedBy, signal watch plans
+  const impRep = applyFeedback(imp, { result: 'replace' }, { modelKey: 'hailo-Legacy', seq: 1, kb: KB['hailo-Legacy'] }).defect;
+  const impRepDone = applyFeedback(impRep, { result: 'done' }, { modelKey: 'hailo-Legacy', seq: 2, kb: KB['hailo-Legacy'] }).defect;
+  eq([impRepDone.status, impRepDone.closedBy], ['repaired', null], 'impact switched to replacement: 완료 goes to re-inspection');
+  eq(impDone.defect.closedBy, 'inspection', 'impact inspection close is marked as such');
+  eq(applyFeedback({ ...impDone.defect, status: 'open' }, { result: 'monitor' }, { modelKey: 'hailo-Legacy', seq: 2, kb: KB['hailo-Legacy'] }).defect.closedBy, null, 'any other result clears closedBy');
+  eq([pl.verify.length, pi.verify[0]], [0, '점검 부위 이상 여부 재확인 (발견한 손상은 별도 결함으로 등록)'], 'signal watch plan: no functional checks; signal job: no measurement wording');
 }
 
 // --- summary ---------------------------------------------------------------------------------

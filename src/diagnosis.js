@@ -69,6 +69,7 @@ const WORK = {
 const WORK_IMPACT_STRUCTURE = ['충격 부위와 주변 균열·찍힘·변형 육안 점검 (확대경, 사진 기록)', '체결부 풀림·유격 확인',
   '손상 발견 시 해당 결함으로 별도 등록 (결함 추가) — 없으면 「이상 없음」 처리'];
 const VERIFY_SIGNAL = '조립·전원 재연결 후 관제 화면에서 해당 노드 상태 정상 보고 확인';
+const VERIFY_SIGNAL_SPOT = '점검 부위 이상 여부 재확인 (발견한 손상은 별도 결함으로 등록)';
 const WORK_MONITOR = ['현 상태 측정·사진 기록', '재점검 시기 등록', '보수 전환 기준 기록 (예: 크기 20% 증가, 예시)'];
 const WORK_MONITOR_SIGNAL = ['신호 상태 기록 (관제 최종 수신 시각·사유)', '재점검 시기 등록', '보수 전환 기준 기록 (예: 같은 증상 2회 반복, 예시)'];
 const REPAIR_TOOLS = {
@@ -370,10 +371,11 @@ export function repairPlan({ defect, parts = [], kb = null, modelKey = '', seq =
   const fed = new Set([code, ...access].flatMap((c) => Object.keys(kbPart(kb, c).functions)));
   const fns = arr(kb && kb.functions);
   const checks = fns.filter((f) => fed.has(f.id)).map((f) => f.check).filter(Boolean);
-  const verify = uniq([VERIFY_DEFECT, ...checks, ...(access.length ? [VERIFY_REASSEMBLY] : []), ...(defect.type === 'fault' ? [VERIFY_SIGNAL] : [])]);
+  const signal = isSignal(defect);
+  // watching a field signal opens nothing and powers nothing: there is no functional check to list
+  const verify = monitor && signal ? [] : uniq([signal ? VERIFY_SIGNAL_SPOT : VERIFY_DEFECT, ...checks, ...(access.length ? [VERIFY_REASSEMBLY] : []), ...(defect.type === 'fault' ? [VERIFY_SIGNAL] : [])]);
 
   let work;
-  const signal = isSignal(defect);
   if (monitor) work = signal ? WORK_MONITOR_SIGNAL : WORK_MONITOR;
   else if (action === 'replace') {
     work = [`예비품 형상·부품번호(${code}) 대조`, '예비품 장착 (위치·방향 확인)', '체결 (규정 토크, 기술교범 확인)'];
@@ -439,16 +441,19 @@ export function applyFeedback(defect, fb = {}, ctx = {}) {
   };
   let reason = null, text = '', kind = 'repair';
   d.monitored = null; // only a fresh 관찰 등록 below marks the defect as monitored
+  d.closedBy = null;
   if (result === 'done' && before.action === 'monitor') {
     // monitoring is not a repair: the defect stays open (deferred) and is tracked at the next inspection
     d.status = 'open';
     d.wait = null;
     d.monitored = fb.at || new Date().toISOString();
     text = `관찰 등록 — 추적 점검 대상 유지 (다음 정기 점검 시 ${isSignal(defect) ? '재확인' : '재측정'})`;
-  } else if (result === 'done' && defect.type === 'impact') {
+  } else if (result === 'done' && defect.type === 'impact' && before.action === 'repair') {
     // the inspection itself is the job: damage found is registered as its own defect, so this closes now
+    // (an impact row switched to replacement or condemned is a real job and goes through re-inspection)
     d.status = 'closed';
     d.wait = null;
+    d.closedBy = 'inspection';
     text = '충격 부위 점검 완료 — 손상 발견 시 별도 결함으로 등록';
   } else if (result === 'done') {
     d.status = 'repaired';

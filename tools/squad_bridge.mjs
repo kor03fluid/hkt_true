@@ -4,7 +4,7 @@
 // https page such as GitHub Pages may not read a plain-http LAN server).
 //
 //   node tools/squad_bridge.mjs [control-server-url] [--port 8095] [--host 127.0.0.1] [--file release/HoloHand-STL.html]
-//                               [--allow-origin <origin>]...
+//                               [--allow-origin <origin>]... [--allow-host <name>]...
 //   control-server-url defaults to $SQUAD_URL, else http://127.0.0.1:8080 (squad-link: node squad-link/server.mjs)
 //   then open http://localhost:8095/#maint
 //
@@ -14,7 +14,8 @@
 // private-network preflight answer). Allowed by default: the hosted viewer https://kor03fluid.github.io; add
 // more with --allow-origin (or $SQUAD_ALLOW_ORIGINS, comma separated). A file:// copy sends Origin 'null', which
 // sandboxed frames of any site send too, so it is never allowed by default: open the bridge URL instead.
-// Bound to loopback (the default), requests must name localhost / 127.0.0.1 / [::1] in Host (DNS rebinding).
+// Requests must name the bridge by localhost, an IP address, or a name given with --allow-host (or
+// $SQUAD_ALLOW_HOSTS) in Host: a web page that re-points its own domain at this machine (DNS rebinding) is refused.
 // No dependencies (Node 18+).
 import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -30,16 +31,46 @@ const opt = (name, d) => {
 const port = Number(opt('port', process.env.PORT || 8095));
 const host = opt('host', '127.0.0.1');
 const file = resolve(ROOT, opt('file', 'release/HoloHand-STL.html'));
-const allow = new Set(['https://kor03fluid.github.io', ...String(process.env.SQUAD_ALLOW_ORIGINS || '').split(',').map((x) => x.trim()).filter(Boolean)]);
-for (let o; (o = opt('allow-origin', null)); ) allow.add(o.replace(/\/+$/, ''));
+const list = (env) => String(process.env[env] || '').split(',').map((x) => x.trim()).filter(Boolean);
+const many = (name) => {
+  const out = [];
+  for (let v; (v = opt(name, null)); ) out.push(v);
+  return out;
+};
+// browsers send Origin in canonical form (lowercase scheme and host, no path): compare the same way
+const allow = new Set();
+for (const o of ['https://kor03fluid.github.io', ...list('SQUAD_ALLOW_ORIGINS'), ...many('allow-origin')]) {
+  if (o === 'null') allow.add('null'); // only when asked for explicitly
+  else {
+    try {
+      allow.add(new URL(o).origin);
+    } catch {
+      console.warn(`  ignored --allow-origin '${o}' (not an origin such as https://example.org)`);
+    }
+  }
+}
+const allowHosts = new Set([...list('SQUAD_ALLOW_HOSTS'), ...many('allow-host')].map((h) => h.toLowerCase()));
 const target = new URL(args.find((a) => !a.startsWith('--')) || process.env.SQUAD_URL || 'http://127.0.0.1:8080');
 const ROUTES = new Set(['config', 'state', 'stream']);
-const LOOPBACK = ['127.0.0.1', 'localhost', '::1'].includes(host);
-const HOSTS = new Set([`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]);
+/** Host header names this machine: localhost, an IP address (any port, e.g. through a port forward), or an allowed name. */
+function hostOk(h) {
+  const m = /^(\[[0-9a-f:.]+\]|[^:]+)(?::\d+)?$/i.exec(String(h || '').trim());
+  if (!m) return false;
+  const name = m[1].toLowerCase();
+  return name === 'localhost' || /^\d{1,3}(\.\d{1,3}){3}$/.test(name) || /^\[[0-9a-f:.]+\]$/.test(name) || allowHosts.has(name);
+}
+const refused = new Set();
 /** CORS headers for an allowed cross-origin caller, none otherwise (same-origin requests need none). */
 function cors(req) {
   const o = req.headers.origin;
-  if (!o || !allow.has(o)) return {};
+  if (!o) return {};
+  if (!allow.has(o)) {
+    if (!refused.has(o)) {
+      refused.add(o);
+      console.log(`  refused cross-origin read from ${o} — to allow it: --allow-origin ${o}`);
+    }
+    return {};
+  }
   return {
     'Access-Control-Allow-Origin': o,
     Vary: 'Origin',
@@ -84,7 +115,7 @@ function relay(req, res, route) {
 
 const server = http.createServer(async (req, res) => {
   try {
-    if (LOOPBACK && !HOSTS.has(String(req.headers.host || '').toLowerCase())) return send(res, 421, { error: 'Host 헤더가 이 중계 서버가 아닙니다' });
+    if (!hostOk(req.headers.host)) return send(res, 421, { error: 'Host 헤더가 이 중계 서버가 아닙니다 (--allow-host 로 추가)' });
     const path = new URL(req.url, 'http://localhost').pathname;
     const m = /^\/squad\/api\/([a-z]+)$/.exec(path);
     if (req.method === 'OPTIONS' && m) {

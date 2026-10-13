@@ -156,7 +156,7 @@ node tools/squad_bridge.mjs http://<관제서버>:8080   # 한 파일 뷰어 + �
 → http://localhost:8095/#maint
 ```
 
-개발 모드는 `SQUAD_URL=http://<관제서버>:8080 npm run dev` 로도 됩니다. 관제 서버에는 CORS가 없고, https 페이지(GitHub Pages)는 LAN의 http 서버를 읽을 수 없어서 중계 서버를 거칩니다. GitHub Pages 화면에서는 패널의 **연결** 버튼으로 `http://localhost:8095` 의 중계 서버에 붙을 수 있습니다(브라우저가 로컬 네트워크 접근 허용을 물을 수 있음). 분대 데이터는 공개 정보가 아니므로 중계 서버는 이 저장소의 GitHub Pages 주소 외의 다른 웹 페이지에는 읽기를 허용하지 않습니다(`--allow-origin` 으로 추가). 더블클릭으로 연 한 파일 버전은 중계 서버 주소(`http://localhost:8095/#maint`)로 여세요.
+개발 모드는 `SQUAD_URL=http://<관제서버>:8080 npm run dev` 로도 됩니다. 관제 서버에는 CORS가 없고, https 페이지(GitHub Pages)는 LAN의 http 서버를 읽을 수 없어서 중계 서버를 거칩니다. GitHub Pages 화면에서는 패널의 **연결** 버튼으로 `http://localhost:8095` 의 중계 서버에 붙을 수 있습니다(브라우저가 로컬 네트워크 접근 허용을 물을 수 있음). 분대 데이터는 공개 정보가 아니므로 중계 서버는 이 저장소의 GitHub Pages 주소 외의 다른 웹 페이지에는 읽기를 허용하지 않습니다(`--allow-origin` 으로 추가). localhost·IP 주소가 아닌 이름으로 접속하면(포트 포워딩 도메인 등) `--allow-host <이름>` 이 필요합니다. 더블클릭으로 연 한 파일 버전은 중계 서버 주소(`http://localhost:8095/#maint`)로 여세요.
 
 | 신호 | 노드 → 장비(기본) | 점검 항목 | 판정 영향 |
 |---|---|---|---|

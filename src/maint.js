@@ -29,12 +29,12 @@ const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 const SANS = 'ui-sans-serif, system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif';
 const STEP_TIME = { remove: 2.2, install: 2.2, work: 3.5, verify: 3.5 }; // s per step while the procedure plays (else 3)
 const KIND = { repair: '정비', fp: '오탐', inspect: '재검사', reinspect: '재검사', add: '등록', import: '불러오기', remove: '삭제', live: '실시간', clear: '이상 없음' };
-const FIELDS = ['status', 'sev', 'origSev', 'size', 'escalated', 'wait', 'rework', 'condemned', 'fp', 'memo', 'monitored', 'forceReplace', 'forceMonitor']; // persisted per id
+const FIELDS = ['status', 'sev', 'origSev', 'size', 'escalated', 'wait', 'rework', 'condemned', 'fp', 'memo', 'monitored', 'forceReplace', 'forceMonitor', 'closedBy']; // persisted per id
 // a SQUAD LINK signal row (live, or exported and imported again): a field signal, never an AI detection
 const signalRow = (r) => !!r && (r.source === 'live' || !!TYPES[r.type]?.signal);
 /** Result choices for an open defect (labels follow the planned action and the source). */
 function resultsFor(r, action, priority) {
-  if (r.type === 'impact' && action !== 'monitor' && !r.condemned) {
+  if (r.type === 'impact' && action === 'repair' && !r.condemned) {
     // an inspection: it is done (damage found goes in as its own defect) or nothing was found
     const out = [['done', '점검 완료(손상은 별도 등록)']];
     if (priority !== 'P1') out.push(['monitor', '관찰 전환']);
@@ -379,6 +379,10 @@ export class Maint {
 
   /** Keyboard. Returns true when the key was used. (Not `key`: that is the model's storage key.) */
   onKey(e) {
+    if (this.keysHeldUntil && nowS() < this.keysHeldUntil) {
+      if (e.key !== 'Escape') e.preventDefault();
+      return true; // typed for a field that a live update just removed
+    }
     const k = e.key.toLowerCase();
     if ((k === 'm' || e.code === 'KeyM') && !e.ctrlKey && !e.metaKey && !e.altKey) {
       this.toggle();
@@ -638,9 +642,12 @@ export class Maint {
   /** Another tab of the viewer wrote the store (both follow the same live stream): take its version first. */
   _syncStore() {
     let changed = false;
+    this.syncedMine = false; // the shown equipment's slice changed: the panel body must be rebuilt
     try {
       if ((localStorage.getItem(STORE) || '{}') !== this._storeRaw) {
+        const before = JSON.stringify(this.store[this.key] ?? null);
         this.store = this._load();
+        this.syncedMine = before !== JSON.stringify(this.store[this.key] ?? null);
         changed = true;
       }
       const sq = localStorage.getItem(STORE_SQUAD);
@@ -820,11 +827,13 @@ export class Maint {
 
   /** Writes a defect state change (+ log) and recomputes everything. */
   _commit(d, log) {
+    this._syncStore(); // another tab's latest first, then this change on top
     const st = this._st();
     const o = {};
     for (const k of FIELDS) if (d[k] !== undefined) o[k] = d[k];
     st.overrides[d.id] = o;
-    if (log) st.history.push({ part: d.part, id: d.id, ...log, closed: d.status === 'closed' && !d.fp && !signalRow(d) });
+    // a resolved repair (the basis of '반복 결함'); an inspection that found nothing to repair is not one
+    if (log) st.history.push({ part: d.part, id: d.id, ...log, closed: d.status === 'closed' && !d.fp && d.closedBy !== 'inspection' });
     st.seq++;
     this._save();
     this._recompute();
@@ -879,7 +888,7 @@ export class Maint {
     if (st === 'lost') this.toast('SQUAD LINK 연결 끊김 — 재연결 중', 2600);
     else if (st === 'upstream' && this.liveWas !== 'upstream') this.toast('중계 서버는 있지만 SQUAD LINK 관제 서버가 응답하지 않습니다 — 재시도 중', 3200);
     else if (st === 'live' && (this.liveWas === 'lost' || this.liveWas === 'upstream')) this.toast('SQUAD LINK 연결됨', 2200);
-    else if (st === 'unavailable' && this.liveUser) this.toast('SQUAD LINK 중계 서버를 찾지 못했습니다 (tools/squad_bridge.mjs)', 3200);
+    else if (st === 'unavailable' && this.liveUser) this.toast(`SQUAD LINK 중계 서버를 찾지 못했거나 이 화면 주소가 허용되지 않았습니다 (squad_bridge.mjs --allow-origin ${location.origin})`, 4200);
     if (st === 'live' || st === 'unavailable') this.liveUser = false;
     this.liveWas = st;
     this._renderLive();
@@ -888,6 +897,7 @@ export class Maint {
   /** A control-server snapshot: signals -> inspection rows of the mapped equipment (only when something changed). */
   _onSquad(snap) {
     const synced = this._syncStore();
+    const mine = this.syncedMine;
     const map = this.squad.map;
     let res;
     try {
@@ -905,12 +915,12 @@ export class Maint {
       this.squad.seen = res.seen;
       this._saveSquad();
     }
-    if (res.add.length || res.bump.length || res.clear.length) this._applyLive(res);
-    else if (synced) this._recompute({ body: false });
+    if (res.add.length || res.bump.length || res.clear.length) this._applyLive(res, mine);
+    else if (synced) this._liveRecompute(mine);
     this._renderLive();
     this._renderFleet();
   }
-  _applyLive({ add, bump, clear }) {
+  _applyLive({ add, bump, clear }, mine = false) {
     const at = new Date().toISOString();
     const name = (key) => this.scene.models.find((m) => m.key === key)?.name || key;
     const notes = [], fresh = [], bumped = new Map();
@@ -945,6 +955,7 @@ export class Maint {
     }
     notes.push(...bumped.values()); // one note per row, with its final count
     for (const { model, id, sig } of clear) {
+      if (model === this.key && id === this.selId && this.formOpen) continue; // being worked on: not now
       const st = this._st(model);
       const row = st.added.find((r) => r.id === id);
       if (!row) continue;
@@ -956,9 +967,18 @@ export class Maint {
     const models = new Set([...add, ...bump, ...clear].map((x) => x.model));
     for (const model of models) this._st(model).seq++;
     this._save();
-    this._recompute({ body: models.has(this.key) }); // other equipment only: keep the panel body (and any input) as is
+    this._liveRecompute(models.has(this.key) || mine); // other equipment only: keep the panel body (and any input) as is
     for (const id of fresh) this.popAt.set(id, nowS());
     if (notes.length && this.on) this.toast(`실시간 · ${notes[0]}${notes.length > 1 ? ` 외 ${notes.length - 1}건` : ''}`, 3600);
+  }
+  /** Recompute for a change that did not come from this tab's user (live signal, another tab). */
+  _liveRecompute(body) {
+    this.liveRender = true;
+    try {
+      this._recompute({ body });
+    } finally {
+      this.liveRender = false;
+    }
   }
   /** Nodes of the control server with their mapping and state. */
   _liveNodes() {
@@ -1290,7 +1310,11 @@ export class Maint {
   // ------------------------------------------------------------------ feedback loop
   _submit() {
     const r = this.byId.get(this.selId);
-    if (!r || r.status !== 'open') return;
+    if (!r || r.status !== 'open') {
+      if (r) this.toast(`#${r.id} 은(는) 이미 ${this._statusKo(r)} 상태입니다 (다른 창 또는 실시간 신호)`, 2800);
+      this._render();
+      return;
+    }
     const plan = this._getPlan();
     const f = this.form;
     const by = String(f.by ?? this.by ?? '').trim();
@@ -1435,8 +1459,9 @@ export class Maint {
   }
   _addRow(hit) {
     const f = this.addVals;
+    this._syncStore();
     const st = this._st();
-    const taken = new Set([...this.rows.map((r) => r.id), ...st.removed, ...st.history.map((h) => h.id)]);
+    const taken = new Set([...this.rows.map((r) => r.id), ...st.added.map((r) => r.id), ...st.removed, ...st.history.map((h) => h.id)]);
     const id = this._newId('U', taken);
     const at = new Date().toISOString();
     const row = {
@@ -1471,6 +1496,7 @@ export class Maint {
       this.toast('수동 등록한 결함만 삭제할 수 있습니다');
       return;
     }
+    this._syncStore();
     const st = this._st();
     st.added = st.added.filter((x) => x.id !== id);
     delete st.overrides[id];
@@ -1498,6 +1524,7 @@ export class Maint {
       this._notice('불러올 결함이 없습니다', ['형식: web/defects.json 과 같은 { "Turret": [ … ] } 또는 현재 장비의 배열 [ … ]']);
       return;
     }
+    this._syncStore();
     const at = new Date().toISOString();
     const res = { added: 0, other: 0, skipped: [], renamed: [], ids: new Set() };
     for (const [key, list] of groups) {
@@ -1625,6 +1652,7 @@ export class Maint {
   _reset() {
     const name = this.def?.name || '';
     if (!confirm(`${name}의 정비 이력·추가 결함·조치 상태를 모두 지웁니다. 계속할까요?`)) return;
+    this._syncStore(); // the dialog blocked this tab: another tab may have written meanwhile
     delete this.store[this.key];
     this._save();
     // conditions still running on nodes mapped here come back as new rows on the next snapshot
@@ -1652,7 +1680,7 @@ export class Maint {
     return !!r && r.status === 'open' && !!r.monitored && this.report?.defects[r.id]?.action === 'monitor';
   }
   _statusKo(r) {
-    if (r.status === 'closed' && !r.fp && r.type === 'impact') return '점검 완료';
+    if (r.status === 'closed' && !r.fp && r.closedBy === 'inspection') return '점검 완료';
     return r.fp ? (signalRow(r) ? '이상 없음' : '오탐') : STATUS[r.status]?.ko || r.status;
   }
   _confText(r) {
@@ -1773,6 +1801,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     this.$map.addEventListener('change', (e) => {
       const node = e.target.dataset?.node;
       if (!node) return;
+      this._syncStore();
       this.squad.map[node] = e.target.value;
       this._saveSquad();
       e.target.blur(); // hand the keyboard back (M / Enter / arrows)
@@ -1813,6 +1842,10 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     // (radios keep the focus: arrow keys move inside the group instead of switching the equipment)
     this.$diag.addEventListener('click', (e) => e.target.closest?.('button, summary, input[type="checkbox"]')?.blur());
     // any pointer input pauses the procedure playback (except the play button itself)
+    // another tab saved (both may follow the same live stream): pick it up at once
+    addEventListener('storage', (e) => {
+      if ((e.key === STORE || e.key === STORE_SQUAD) && this._syncStore() && this.def) this._liveRecompute(this.syncedMine);
+    });
     addEventListener('pointerdown', (e) => {
       if (this.on && !e.target.closest?.('[data-act="play"]')) this.noteInput();
     }, true);
@@ -1900,7 +1933,13 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     // a field being typed in survives the rebuild (its value lives in this.form), so keys never fall through
     // to the global shortcuts (M, arrows, Space, Delete)
     const a = document.activeElement;
-    const keep = a && b.contains(a) && a.dataset?.f && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) ? { f: a.dataset.f, s: a.selectionStart, e: a.selectionEnd } : null;
+    let keep = null;
+    if (a && a !== b && b.contains(a)) {
+      const q = (k, v) => `[${k}="${CSS.escape(String(v))}"]`;
+      if (a.dataset?.f) keep = { sel: q('data-f', a.dataset.f), s: a.selectionStart, e: a.selectionEnd };
+      else if (a.type === 'radio' && a.name) keep = { sel: `input${q('name', a.name)}${q('value', a.value)}` };
+      else if (a.dataset?.act) keep = { sel: q('data-act', a.dataset.act) + (a.dataset.k != null ? q('data-k', a.dataset.k) : '') + (a.dataset.id != null ? q('data-id', a.dataset.id) : '') };
+    }
     this._netKey = null;
     b.innerHTML = !this.report
       ? '<p class="mt-empty">모델을 불러오는 중입니다.</p>'
@@ -1913,7 +1952,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
             : this._htmlDefects();
     b.scrollTop = resetScroll ? 0 : top;
     if (keep) {
-      const el = b.querySelector(`[data-f="${CSS.escape(keep.f)}"]`);
+      const el = b.querySelector(keep.sel);
       if (el) {
         el.focus({ preventScroll: true });
         try {
@@ -1922,6 +1961,12 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
           /* number inputs have no selection */
         }
         return;
+      }
+      if (this.liveRender) {
+        // the control went away under the user's hands (a live signal or another tab changed the row): the
+        // next keys were meant for it, so they must not turn into shortcuts
+        this.keysHeldUntil = nowS() + 1.5;
+        this.toast('작업 중이던 항목이 실시간 신호 또는 다른 창의 변경으로 바뀌었습니다', 2400);
       }
     }
     b.querySelector(this.tab === 'repair' ? '.mt-step.cur' : '.mt-row.sel')?.scrollIntoView({ block: 'nearest' });
@@ -2107,11 +2152,11 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
         .join('')}</ol>`;
     const kb = this._kb()?.parts?.[plan.part];
     const det = `<details class="mt-det"><summary>공구·자재</summary><p><b>공구</b> ${esc((plan.tools || []).join(' · ') || '—')}</p><p><b>자재</b> ${esc((plan.materials || []).join(' · ') || '—')}</p>${plan.action === 'replace' && kb?.spare ? `<p><b>예비품</b> ${esc(kb.spare)}</p>` : ''}</details>
-      <details class="mt-det"><summary>작동 점검 기준</summary><ul>${(plan.verify || []).map((v) => `<li>${esc(v)}</li>`).join('')}</ul></details>`;
+      ${(plan.verify || []).length ? `<details class="mt-det"><summary>작동 점검 기준</summary><ul>${plan.verify.map((v) => `<li>${esc(v)}</li>`).join('')}</ul></details>` : ''}`;
     return head + acc + safety + note + steps + det + this._htmlForm(r, plan);
   }
   _htmlForm(r, plan) {
-    if (r.status === 'closed') return `<div class="mt-form done"><p>${r.fp ? (r.source === 'manual' ? '등록 취소 — 결함 아님' : signalRow(r) ? '이상 없음 — 실시간 신호 항목 종료' : '오탐 처리 — AI 재학습 데이터로 기록됨') : r.type === 'impact' ? '점검 완료 — 손상 발견 시 별도 결함으로 등록' : '해결 — 재검사 합격'}</p></div>`;
+    if (r.status === 'closed') return `<div class="mt-form done"><p>${r.fp ? (r.source === 'manual' ? '등록 취소 — 결함 아님' : signalRow(r) ? '이상 없음 — 실시간 신호 항목 종료' : '오탐 처리 — AI 재학습 데이터로 기록됨') : r.closedBy === 'inspection' ? '점검 완료 — 손상 발견 시 별도 결함으로 등록' : '해결 — 재검사 합격'}</p></div>`;
     if (r.status === 'repaired') {
       if (r.source === 'sample') {
         return `<div class="mt-form open insp"><p>정비 완료 — 검사 대기${this._holds(r.id) ? ' · 재검사 합격 전 운용 금지' : ''}</p><button class="mt-submit" data-act="reinspect" data-air${this.scan === 'running' ? ' disabled' : ''}>AI 재검사</button><small>시뮬레이션 재검사 — 예시 결함에만 사용합니다</small></div>`;
@@ -2386,7 +2431,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     const S = SEVERITY[r.sev] || SEVERITY.mid, T = TYPES[r.type] || { ko: r.type, measure: '크기' };
     const closed = r.status === 'closed';
     const l3 = closed
-      ? r.fp ? (signalRow(r) ? '이상 없음 (점검 종료)' : '오탐 처리 (결함 아님)') : r.type === 'impact' ? '점검 완료' : '해결 — 재검사 합격'
+      ? r.fp ? (signalRow(r) ? '이상 없음 (점검 종료)' : '오탐 처리 (결함 아님)') : r.closedBy === 'inspection' ? '점검 완료' : '해결 — 재검사 합격'
       : [`${a.priority || ''} ${PRIORITY[a.priority]?.ko || ''}`.trim(), actionKo(r, a.action), LEVELS[a.level]?.ko, r.status === 'repaired' ? '검사 대기' : ''].filter(Boolean).join(' · ');
     const l4 = r.status === 'open' ? '수리 절차 보기 ›' : r.status === 'repaired' ? (r.source === 'sample' ? 'AI 재검사 ›' : '검사 결과 입력 ›') : '';
     const lines = [
