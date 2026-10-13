@@ -247,7 +247,7 @@ body.maint #diag.collapsed + #dg-open { display: block; }
 .dg-eq { flex: 1; min-width: 0; text-align: right; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #dg-col { background: none; border: 0; color: var(--muted); font-size: 13px; padding: 0 2px; }
 .dg-r2 { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.dg-ready { --c: #8f95aa; font-size: 18px; font-weight: 700; color: var(--c); text-shadow: 0 0 12px color-mix(in srgb, var(--c) 45%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dg-ready { --c: #8f95aa; transform-origin: left center; min-width: 0; font-size: 18px; font-weight: 700; color: var(--c); text-shadow: 0 0 12px color-mix(in srgb, var(--c) 45%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dg-ready.grey { font-size: 15px; font-weight: 600; }
 .dg-ready.pay { animation: dg-pay 0.4s ease-out; }
 @keyframes dg-pay { from { transform: scale(1.15); filter: brightness(1.6); } to { transform: none; filter: none; } }
