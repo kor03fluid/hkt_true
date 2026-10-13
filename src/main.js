@@ -362,8 +362,11 @@ maint = new Maint({
   banner: showBanner,
   insets,
   relayout,
+  setPartVisible,
   dwellTime: () => dwellTime(),
 });
+// a clicked button outside the panel gives the keyboard back, so Enter / M / N never re-click it
+addEventListener('click', (e) => e.target.closest?.('#start button, #chips button, #toolbar button, #panel button, #dg-open')?.blur());
 relayout();
 
 // for debugging in the browser console (dev server only)
@@ -726,7 +729,7 @@ addEventListener('keydown', (e) => {
   else if (k === 'x') $('b-xray').click();
   else if (k === 'e') $('t-edges').click();
   else if (k === 'i' && scene.sel >= 0) $('pc-iso').click();
-  else if (k === 'h' && scene.sel >= 0) setPartVisible(scene.sel, false);
+  else if (k === 'h' && scene.sel >= 0 && !maint.on) setPartVisible(scene.sel, false); // maintenance keeps every part shown
   else if (k === 'escape') select(-1);
   else if (e.key >= '1' && e.key <= '9' && +e.key <= scene.models.length) switchModel(+e.key - 1);
 });

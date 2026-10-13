@@ -44,6 +44,7 @@ const BATTERY_SAFETY = '배터리 팽창·발열 확인 — 이상 시 즉시 �
 const TORQUE = '규정 토크 (기술교범 확인)';
 const VERIFY_DEFECT = '결함 부위 육안·계측 재확인 — 잔여 결함 없음';
 const VERIFY_REASSEMBLY = '분해 부품 전수 재조립·체결 확인';
+const RESTORE = '공구·이물 회수 → 「조작 금지」 표지 제거 · 축 고정 해제 · 전원 재연결 (작동 점검 준비)';
 
 const WORK = {
   crack: ['균열 길이·끝점 측정, 사진 기록', '균열 끝 정지 홀 가공 (∅1 mm, 예시)', '세척 후 2액형 에폭시 보강, 제품 규정 경화 시간 준수',
@@ -139,7 +140,8 @@ export function riskOf(defect, partKb) {
 }
 
 function actionOf(d, pk, code) {
-  if (d.condemned) return 'replace';
+  if (d.condemned || d.forceReplace) return 'replace'; // condemned, or the technician switched to replacement
+  if (d.forceMonitor) return 'monitor'; // the technician judged it does not need work now
   const sev = sevOf(d);
   if (isHelmet(code)) return sev === 'high' ? 'replace' : 'monitor'; // helmet shells are never repaired
   switch (d.type) {
@@ -281,9 +283,12 @@ export function diagnose({ parts = [], defects = [], kb = null } = {}) {
     }
   }
   const verifyNogoParts = new Set();
+  const holds = []; // repaired defects that keep the equipment NO-GO until they pass re-inspection
   for (const d of repaired) {
-    if (A[d.id].priority === 'P1' && pk[d.part].crit === 3 && !verifyNogoParts.has(d.part)) {
+    if (A[d.id].priority === 'P1' && pk[d.part].crit === 3) {
       isNogo = true;
+      holds.push(d.id);
+      if (verifyNogoParts.has(d.part)) continue;
       verifyNogoParts.add(d.part);
       nogoVerify.push(`${d.part} 정비 후 검사 대기 — 검사 합격 전 운용 금지`);
     }
@@ -297,7 +302,7 @@ export function diagnose({ parts = [], defects = [], kb = null } = {}) {
   limited.push(...limitedP, ...uniq(limitedSupply), ...limitedVerify);
   const status = isNogo ? 'NOGO' : isLimited ? 'LIMITED' : 'GO';
   const deferred = open.filter((d) => !contrib.has(d.id)).sort((a, b) => A[b.id].risk - A[a.id].risk).map((d) => d.id);
-  const readiness = { status, ...READINESS[status], reasons: uniq([...nogo, ...limited]).slice(0, 4), deferred, deferredLabel: DEFERRED };
+  const readiness = { status, ...READINESS[status], reasons: uniq([...nogo, ...limited]).slice(0, 4), deferred, deferredLabel: DEFERRED, holds };
 
   let wsum = 0, hsum = 0;
   for (const c of codes) { wsum += pk[c].crit; hsum += pk[c].crit * reportParts[c].health; }
@@ -355,17 +360,19 @@ export function repairPlan({ defect, parts = [], kb = null, modelKey = '', seq =
 
   const steps = [];
   const add = (kind, part, text) => steps.push({ id: 's' + (steps.length + 1), kind, part, text });
-  if (a.needsConfirm) {
-    add('prep', code, `육안·계측으로 결함 확인 (AI 신뢰도 ${Math.round(defect.conf * 100)}%) — 결함 아니면 오탐 처리`);
-  }
+  const confirm = `육안·계측으로 결함 확인 (AI 신뢰도 ${Math.round(num(defect.conf, 0) * 100)}%) — 결함 아니면 오탐 처리`;
   if (!monitor) {
+    // isolate first (power, axes, stored energy), then touch and measure
     safety.forEach((s) => add('prep', null, s));
+    if (a.needsConfirm) add('prep', code, confirm);
     access.forEach((c) => add('remove', c, `${label(c)} 분리`));
     if (action === 'replace') add('remove', code, `${label(code)} 분리 (교체 대상)`);
   }
+  if (monitor && a.needsConfirm) add('prep', code, confirm);
   work.forEach((t, i) => add('work', code, `${NUM[i] || `${i + 1}.`} ${t}`));
   if (!monitor) {
     [...access].reverse().forEach((c) => add('install', c, `${label(c)} 역순 조립 — 체결 ${TORQUE}`));
+    add('install', null, RESTORE); // the powered checks below need the isolation undone
     verify.forEach((t) => add('verify', code, t));
   }
   add('record', code, `${monitor ? '관찰 등록' : '정비 결과 기록'} — 작업지시 ${wo} · 소요 시간·측정값·사용 부품 정비 이력 등록`);
@@ -395,8 +402,21 @@ export function applyFeedback(defect, fb = {}, ctx = {}) {
   const d = { ...defect };
   const result = fb.result || 'done';
   const wo = workOrder(ctx.modelKey, defect.id, ctx.seq);
+  const kb = ctx.kb || null;
+  const before = assess(defect, kbPart(kb, defect.part), defect.part, kb);
+  // keeps the echelon already reached when the base echelon changes (severity or action changed)
+  const rebase = () => {
+    const base = assess({ ...d, escalated: 0 }, kbPart(kb, d.part), d.part, kb).baseLevel;
+    const reached = LEVEL_IDS.indexOf(ctx.level || before.level);
+    d.escalated = Math.max(0, reached - LEVEL_IDS.indexOf(base));
+  };
   let reason = null, text = '', kind = 'repair';
-  if (result === 'done') {
+  if (result === 'done' && before.action === 'monitor') {
+    // monitoring is not a repair: the defect stays open (deferred) and is tracked at the next inspection
+    d.status = 'open';
+    d.monitored = fb.at || new Date().toISOString();
+    text = '관찰 등록 — 추적 점검 대상 유지 (다음 정기 점검 시 재측정)';
+  } else if (result === 'done') {
     d.status = 'repaired';
     d.wait = null;
     text = '수리 완료 — 재검사 대기';
@@ -408,7 +428,21 @@ export function applyFeedback(defect, fb = {}, ctx = {}) {
     d.wait = null; // work was carried out, so the defect no longer waits for parts
     const m = num(fb.measured, null);
     if (m != null) d.size = m;
-    text = `부분 수리 — 심각도 ${SEVERITY[from].ko} → ${SEVERITY[d.sev].ko}` + (m != null ? ` · 잔여 ${m} mm` : '');
+    rebase();
+    text = (d.sev === from ? `부분 수리 — 심각도 ${SEVERITY[from].ko} 유지` : `부분 수리 — 심각도 ${SEVERITY[from].ko} → ${SEVERITY[d.sev].ko}`) + (m != null ? ` · 잔여 ${m} mm` : '');
+  } else if (result === 'replace') {
+    d.status = 'open';
+    d.forceReplace = true;
+    d.forceMonitor = false;
+    rebase();
+    text = '교체 전환 — 보수로 회복 불가 판단, 교체로 변경';
+  } else if (result === 'monitor') {
+    d.status = 'open';
+    d.forceMonitor = true;
+    d.forceReplace = false;
+    d.wait = null;
+    rebase();
+    text = '관찰 전환 — 기능 영향 없음 판단, 추적 점검으로 변경';
   } else if (result === 'fail') {
     reason = fb.reason === 'supply' ? 'supply' : 'capability';
     d.status = 'open';
@@ -416,7 +450,8 @@ export function applyFeedback(defect, fb = {}, ctx = {}) {
       d.wait = 'supply';
       text = '부품 없음 — 보급 대기';
     } else {
-      const level = ctx.level || assess(defect, kbPart(ctx.kb, defect.part), defect.part, ctx.kb || null).level;
+      d.wait = null; // the attempt was made, so parts were there
+      const level = ctx.level || before.level;
       if (!defect.condemned && level !== 'depot') {
         d.escalated = Math.min(2, num(defect.escalated, 0) + 1);
         text = level === 'unit' ? '수리 불가 → 야전정비 의뢰' : '수리 불가 → 창정비 후송';
@@ -429,7 +464,8 @@ export function applyFeedback(defect, fb = {}, ctx = {}) {
     d.status = 'closed';
     d.fp = true;
     kind = 'fp';
-    text = '오탐 판정 — AI 판독 오류 (재학습 데이터)';
+    // only an AI detection can be an AI misread; a manual entry is simply withdrawn
+    text = defect.source === 'manual' ? '등록 취소 — 결함 아님 (수동 등록)' : '오탐 판정 — AI 판독 오류 (재학습 데이터)';
   }
   if (fb.memo != null && fb.memo !== '') d.memo = fb.memo;
   const log = {

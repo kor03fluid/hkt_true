@@ -175,10 +175,10 @@ void defectLayer(vec3 p, vec3 nrm, out vec3 emit, out vec3 markCol, out float ma
     float ring = dLine(abs(rho - ringR), mix(0.016, 0.03, max(sel, hov)), px) * (0.3 + 0.7 * dash);
     float pulse = 0.75 + 0.25 * sin(uTime * 5.0);
     float k2 = on * (repaired > 0.5 ? 0.35 : 1.0);
-    vec3 ringCol = repaired > 0.5 ? vec3(0.36, 0.89, 0.54) : col;
+    vec3 ringCol = repaired > 0.5 ? vec3(0.212, 0.445, 1.0) : col; // #7fb2ff (검사 대기), linear
     emit += (col * (core * 1.6 + halo) * (1.0 + 0.6 * sel * pulse) * k2 + ringCol * ring * (1.0 + 0.8 * max(sel, hov)) * on) * uMaint;
-    mark = max(mark, lookA * k2 * uMaint);
-    markCol = look;
+    float mk = lookA * k2 * uMaint;
+    if (mk > mark) { mark = mk; markCol = look; }
   }
 }
 // cyan band at the AI scan plane; 'scanned' = the plane has passed this point
@@ -394,8 +394,10 @@ export class StlScene {
     this.defectHover = null;
     this.focus = null; // focused defect (camera turned to it, others ghosted)
     this.rotGoal = null; // animated view turn towards the focused defect
-    this.anchorRel = new THREE.Vector3(); // root origin -> focused defect (world), last known
-    this.anchorF = 0; // 0..1 blend of the anchoring (keeps the focused defect in the middle)
+    // world offset of the root that keeps the focused defect in the middle of the free area: it eases
+    // towards a new target (focus change, release) and then follows it exactly
+    this.anchorOff = new THREE.Vector3();
+    this.anchorExact = false;
     this.preFocusScale = null;
     this.proc = null; // repair procedure step view { target, removed: [], current }
     this.insets = null; // [left, right] px covered by panels; null = the default left panel
@@ -679,7 +681,8 @@ export class StlScene {
     this.defects = [];
     this.defectSel = this.defectHover = null;
     this.focus = this.rotGoal = this.proc = this.scan = null;
-    this.anchorF = 0;
+    this.anchorOff.set(0, 0, 0);
+    this.anchorExact = false;
     this.preFocusScale = null;
     this.uScanOn.value = 0;
     this.uScanY.value = -1e5;
@@ -732,7 +735,8 @@ export class StlScene {
   resetView(snap = false) {
     this.focus = this.rotGoal = null;
     this.preFocusScale = null;
-    if (snap) this.anchorF = 0;
+    this.anchorExact = false;
+    if (snap) this.anchorOff.set(0, 0, 0);
     const v = { ...DEFAULT_VIEW, ...this.entry?.def.manifest?.view };
     this.rot.x = v.x;
     this.rot.y = v.y;
@@ -884,8 +888,14 @@ export class StlScene {
   startScan(seconds = 2.4) {
     if (!this.entry) return false;
     this.root.updateMatrixWorld(true);
+    this.scan = { t: 0, dur: Math.max(0.3, seconds), ...this._scanExtents() };
+    for (const d of this.defects) d.reveal = d.revealT = 0;
+    return true;
+  }
+  /** World-y range the scan plane sweeps: the visible parts, clipped to the screen. */
+  _scanExtents() {
     let top = -Infinity, bottom = Infinity;
-    const w = new THREE.Vector3();
+    const w = _v3;
     for (const p of this.parts) {
       if (!p.visible) continue;
       const y = p.pivot.getWorldPosition(w).y, r = p.rad * this.root.scale.x;
@@ -893,9 +903,8 @@ export class StlScene {
       bottom = Math.min(bottom, y - r);
     }
     const lim = (this.H / 2) * this.unitsPerPx;
-    this.scan = { t: 0, dur: Math.max(0.3, seconds), top: Math.min(top, lim), bottom: Math.max(bottom, -lim) };
-    for (const d of this.defects) d.reveal = d.revealT = 0;
-    return true;
+    if (top < bottom) return { top: lim, bottom: -lim };
+    return { top: Math.min(top, lim), bottom: Math.max(bottom, -lim) };
   }
   get scanProgress() {
     return this.scan ? this.scan.t : 1;
@@ -911,6 +920,7 @@ export class StlScene {
       return false;
     }
     if (!this.focus) this.preFocusScale = this.scaleTarget;
+    if (this.focus !== d) this.anchorExact = false; // ease over to the new defect instead of jumping
     this.focus = d;
     const p = this.parts[d.part];
     // defect normal in root-local coordinates
@@ -1037,7 +1047,9 @@ export class StlScene {
     return { x: (v.x * 0.5 + 0.5) * this.W, y: (-v.y * 0.5 + 0.5) * this.H };
   }
   _pickable(p) {
-    return p.visible && !(this.isolate && this.sel >= 0 && p.i !== this.sel);
+    if (!p.visible || (this.isolate && this.sel >= 0 && p.i !== this.sel)) return false;
+    if (this.focus && p.i !== this.focus.part) return false; // faint context around a focused defect
+    return !(this.proc && this.proc.removed.has(p.i) && p.i !== this.proc.target);
   }
 
   /** Part under a screen point (ray hit first, else nearest part centre within maxDist px). */
@@ -1172,7 +1184,7 @@ export class StlScene {
       const ease = 1 - Math.pow(1 - clamp(this.pop, 0, 1), 3);
       this.root.rotation.set(this.rot.x, this.rot.y + (1 - ease) * 0.8, this.rot.z, 'YXZ');
       this.root.scale.setScalar(this.entry.fit * this.scale * Math.max(1e-3, ease));
-      this.root.position.set(this.shift, 0, 0).addScaledVector(this.anchorRel, -this.anchorF);
+      this.root.position.set(this.shift, 0, 0).sub(this.anchorOff);
       this.root.updateMatrixWorld(true);
       this._updateDefects(dt);
     }
@@ -1189,17 +1201,31 @@ export class StlScene {
   /** Scan sweep, defect reveal, world positions and the anchoring that keeps a focused defect centred. */
   _updateDefects(dt) {
     if (this.scan) {
+      // the extents follow the model while it is still zooming / moving into place
+      Object.assign(this.scan, this._scanExtents());
       this.scan.t = Math.min(1, this.scan.t + dt / this.scan.dur);
       this.uScanY.value = this.scan.top + (this.scan.bottom - this.scan.top) * this.scan.t;
       this.uScanOn.value = Math.min(1, this.scan.t * 8, (1 - this.scan.t) * 8);
     }
     for (const d of this.defects) d.world.copy(d.local).applyMatrix4(this.parts[d.part].mesh.matrixWorld);
     // anchoring: put the focused defect exactly at (free-area centre, 0, 0) in world space, so it stays
-    // put while the view turns, zooms or explodes (blend in / out with anchorF)
-    if (this.focus) this.anchorRel.copy(this.focus.world).sub(this.root.position);
-    this.anchorF = damp(this.anchorF, this.focus ? 1 : 0, 6, dt);
+    // put while the view turns, zooms or explodes. A new target (another defect, release) is eased to.
+    // While the focused part itself is dragged or twisted the anchor holds still, so the part follows the hand.
+    const frozen = this.focus && this.grabbed === this.focus.part;
+    if (frozen) this.anchorExact = false;
+    else if (this.focus) {
+      const rel = _v2.copy(this.focus.world).sub(this.root.position); // root origin -> defect
+      if (this.anchorExact) this.anchorOff.copy(rel);
+      else {
+        this.anchorOff.lerp(rel, 1 - Math.exp(-5 * dt));
+        if (this.anchorOff.distanceToSquared(rel) < 1e-6) this.anchorExact = true;
+      }
+    } else {
+      this.anchorOff.lerp(_v2.set(0, 0, 0), 1 - Math.exp(-6 * dt));
+      if (this.anchorOff.lengthSq() < 1e-8) this.anchorOff.set(0, 0, 0);
+    }
     const moved = _v.copy(this.root.position);
-    this.root.position.set(this.shift, 0, 0).addScaledVector(this.anchorRel, -this.anchorF);
+    this.root.position.set(this.shift, 0, 0).sub(this.anchorOff);
     moved.subVectors(this.root.position, moved);
     if (moved.lengthSq() > 0) {
       this.root.updateMatrixWorld(true);
@@ -1225,3 +1251,5 @@ export class StlScene {
 
 const _qI = new THREE.Quaternion();
 const _v = new THREE.Vector3();
+const _v2 = new THREE.Vector3();
+const _v3 = new THREE.Vector3();

@@ -232,13 +232,20 @@ for (const key of MODELS) {
     ok(p.steps.length >= 3, `${key} ${p.id}: plan has steps`);
     ok(p.steps.every((s, i) => s.id === `s${i + 1}` && s.text), `${key} ${p.id}: step ids/text`);
     eq(p.steps[p.steps.length - 1].kind, 'record', `${key} ${p.id}: ends with record`);
-    if (d.conf < 0.8) ok(p.steps[0].text.startsWith('육안·계측으로 결함 확인 (AI 신뢰도'), `${key} ${p.id}: confirm first`);
+    if (d.conf < 0.8) {
+      // the AI confirmation comes after the isolation (safety) steps and before anything is taken off
+      const ci = p.steps.findIndex((s) => s.text.startsWith('육안·계측으로 결함 확인 (AI 신뢰도'));
+      const firstNonPrep = p.steps.findIndex((s) => s.kind !== 'prep');
+      ok(ci >= 0 && p.steps.slice(0, ci).every((s) => s.kind === 'prep') && (firstNonPrep < 0 || ci < firstNonPrep), `${key} ${p.id}: confirm after isolation, before work`);
+    }
     if (p.action === 'monitor') {
       ok(p.access.length === 0 && !p.steps.some((s) => s.kind === 'remove' || s.kind === 'install'), `${key} ${p.id}: monitor has no disassembly`);
       eq(p.minutes, 20, `${key} ${p.id}: monitor minutes`);
     } else {
       eq(p.steps.filter((s) => s.kind === 'remove').map((s) => s.part), [...p.access, ...(p.action === 'replace' ? [p.part] : [])], `${key} ${p.id}: remove steps`);
-      eq(p.steps.filter((s) => s.kind === 'install').map((s) => s.part), [...p.access].reverse(), `${key} ${p.id}: install reversed`);
+      eq(p.steps.filter((s) => s.kind === 'install' && s.part).map((s) => s.part), [...p.access].reverse(), `${key} ${p.id}: install reversed`);
+      const restore = p.steps.findIndex((s) => s.kind === 'install' && !s.part);
+      ok(restore >= 0 && restore < p.steps.findIndex((s) => s.kind === 'verify'), `${key} ${p.id}: isolation undone before the powered checks`);
       const kinds = p.steps.map((s) => s.kind);
       ok(kinds.join(',').match(/^(prep,)*(remove,)*(work,)+(install,)*(verify,)+record$/), `${key} ${p.id}: step order ${kinds}`);
     }
@@ -289,6 +296,33 @@ console.log('Regressions');
   const b4 = mk('B-04', 'wear', 'mid', 16);
   const lvl = as('Turret', b4).level;
   eq(applyFeedback(b4, { result: 'fail' }, { modelKey: 'Turret', seq: 1, level: lvl }).log.text, '수리 불가 → 창정비 후송', 'level from the report decides the escalation');
+  // monitoring is not a repair: 완료 on a monitor defect keeps it open and never reaches re-inspection
+  const leg = KB['hailo-Legacy'];
+  const l1 = runtimeDefect(DEFECTS['hailo-Legacy'].find((x) => x.id === 'L1'), 'sample');
+  const mon = applyFeedback(l1, { result: 'done' }, { modelKey: 'hailo-Legacy', seq: 1, kb: leg });
+  ok(mon.defect.status === 'open' && mon.defect.monitored && mon.log.text.startsWith('관찰 등록'), 'monitor 완료 = 관찰 등록, stays open');
+  eq(run('hailo-Legacy', sample('hailo-Legacy').map((x) => (x.id === 'L1' ? mon.defect : x))).readiness.status, 'GO', 'monitor registration keeps Legacy GO');
+  // a capability failure clears a supply wait
+  const kbT = KB.Turret;
+  let w = applyFeedback(mk('B-04', 'wear', 'mid', 16), { result: 'fail', reason: 'supply' }, { modelKey: 'Turret', seq: 1, kb: kbT }).defect;
+  w = applyFeedback(w, { result: 'fail', reason: 'capability' }, { modelKey: 'Turret', seq: 2, kb: kbT }).defect;
+  ok(w.wait === null && w.escalated === 1, 'capability failure clears the supply wait');
+  // partial repair keeps the echelon already reached (no silent jump to depot)
+  let h5 = applyFeedback(mk('HP-05', 'dent', 'high', 10), { result: 'fail' }, { modelKey: 'hailo-Modern', seq: 1, kb: KB['hailo-Modern'] }).defect;
+  const lv1 = as('hailo-Modern', h5).level;
+  h5 = applyFeedback(h5, { result: 'partial' }, { modelKey: 'hailo-Modern', seq: 2, kb: KB['hailo-Modern'] }).defect;
+  eq(as('hailo-Modern', h5).level, lv1, 'partial repair keeps the reached echelon');
+  // technician switches: replace / monitor
+  const sw = applyFeedback(mk('Y-03', 'deform', 'mid', 14), { result: 'replace' }, { modelKey: 'Turret', seq: 1, kb: kbT }).defect;
+  eq(as('Turret', sw).action, 'replace', '교체 전환 forces replace');
+  const sm = applyFeedback(mk('B-01', 'dent', 'mid', 11), { result: 'monitor' }, { modelKey: 'Turret', seq: 1, kb: kbT }).defect;
+  eq(as('Turret', sm).action, 'monitor', '관찰 전환 forces monitor');
+  // a manual entry marked 결함 아님 is not an AI misread
+  ok(!applyFeedback(mk('B-01', 'dent', 'mid', 11), { result: 'false' }, { kb: kbT }).log.text.includes('AI'), 'manual 오탐 text');
+  eq(applyFeedback(mk('L-01', 'wear', 'low', 5), { result: 'partial' }, { kb: kbT }).log.text, '부분 수리 — 심각도 경미 유지', 'partial on 경미 copy');
+  // readiness names the repaired defects that hold NO-GO
+  const t1r = sample('Turret').map((x) => (x.id === 'T1' ? { ...x, status: 'repaired' } : x));
+  ok(run('Turret', t1r).readiness.holds.includes('T1'), 'readiness.holds lists repaired P1 on crit-3');
   const noPart = diagnose({ parts: PARTS.Turret, defects: [{ id: 'Z1', type: 'crack', sev: 'high', size: 5 }], kb: KB.Turret });
   ok(noPart && noPart.counts.open === 0, 'a defect without a part is ignored, not a crash');
 }

@@ -23,8 +23,22 @@ const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 const SANS = 'ui-sans-serif, system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif';
 const STEP_TIME = { remove: 2.2, install: 2.2, work: 3.5, verify: 3.5 }; // s per step while the procedure plays (else 3)
 const KIND = { repair: '정비', fp: '오탐', inspect: '재검사', reinspect: '재검사', add: '등록', import: '불러오기', remove: '삭제' };
-const RESULTS = [['done', '완료'], ['partial', '부분 수리'], ['fail', '수리 불가'], ['false', '오탐(결함 아님)']];
-const FIELDS = ['status', 'sev', 'origSev', 'size', 'escalated', 'wait', 'rework', 'condemned', 'fp', 'memo']; // persisted per id
+const FIELDS = ['status', 'sev', 'origSev', 'size', 'escalated', 'wait', 'rework', 'condemned', 'fp', 'memo', 'monitored', 'forceReplace', 'forceMonitor']; // persisted per id
+/** Result choices for an open defect (labels follow the planned action and the source). */
+function resultsFor(r, action) {
+  const out = [['done', action === 'monitor' ? '관찰 등록' : '완료'], ['partial', '부분 수리'], ['fail', '수리 불가']];
+  if (action !== 'replace') out.push(['replace', '교체 전환']);
+  if (action !== 'monitor') out.push(['monitor', '관찰 전환']);
+  out.push(['false', r.source === 'manual' ? '등록 취소(결함 아님)' : '오탐(결함 아님)']);
+  return out;
+}
+/** Storage key of a model: repo models by file, dropped ones by name + their part list. */
+function keyOf(def) {
+  if (def.key) return def.key;
+  let h = 2166136261;
+  for (const ch of (def.parts || []).map((p) => p.file).sort().join('|')) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+  return `local:${def.name}:${(h >>> 0).toString(36)}`;
+}
 // gesture list copy while maintenance mode is on (title, hint)
 const GEST = {
   OPEN: ['편 손 움직이기', '모델 회전 (정비 중 분해 꺼짐)'],
@@ -108,6 +122,7 @@ export class Maint {
     this.showPart = opts.showPart || (() => {});
     this.switchModel = opts.switchModel || (() => {});
     this.setActive = opts.setActive || (() => {});
+    this.setPartVisible = opts.setPartVisible || ((i, v) => this.scene.setVisible(i, v));
     this.banner = opts.banner || (() => {});
     this.insets = opts.insets || { l: 0, r: 0 };
     this.relayout = opts.relayout || (() => {});
@@ -151,7 +166,7 @@ export class Maint {
     this.plan = null;
     this.planKey = '';
     this.formOpen = false;
-    this.form = { result: 'done', reason: 'capability', measured: '', minutes: '', memo: '', by: null, insp: null };
+    this.form = { result: 'done', reason: 'capability', measured: '', minutes: null, memo: '', by: null, insp: null };
     this.play = null;
     this.addMode = false;
     this.addPick = null;
@@ -189,8 +204,9 @@ export class Maint {
     this.$chip.classList.toggle('active', on);
     sc.setMaint(on);
     if (on) {
-      this.saved = { explode: sc.explodeTarget, scale: sc.scaleTarget };
+      this.saved = { explode: sc.explodeTarget, scale: sc.scaleTarget, index: sc.index };
       sc.explodeTarget = 0;
+      sc.parts.forEach((p) => !p.visible && this.setPartVisible(p.i, true));
       this._gestCopy(true);
       this.relayout();
       if (sc.entry) sc.scaleTarget = sc.fitScale(0.7);
@@ -217,7 +233,8 @@ export class Maint {
       this.autoFirst = false;
       this.passAnim = this.reinspectId = null;
       sc.explodeTarget = this.saved?.explode ?? 0;
-      if (this.saved) sc.scaleTarget = Math.min(this.saved.scale, 6);
+      if (this.saved && this.saved.index === sc.index) sc.scaleTarget = Math.min(this.saved.scale, 6);
+      else sc.scaleTarget = Math.min(6, sc.entry?.def.manifest?.view?.zoom ?? 1);
       this._gestCopy(false);
       this.air.el?.classList.remove('air-hot');
       document.body.classList.remove('mt-pointer');
@@ -229,14 +246,14 @@ export class Maint {
   /** scene.onModel: a model was shown (also while maintenance mode is off). */
   onModel(i, entry) {
     this.def = entry.def;
-    this.key = entry.def.key || `local:${entry.def.name}`;
+    this.key = keyOf(entry.def);
     this.selId = this.hoverId = null;
     this.stepIdx = -1;
     this._stopPlay();
     this._closeFloat();
     this._setAdd(false);
     this.passAnim = this.reinspectId = null;
-    this.autoFirst = false;
+    if (this.firstShown) this.autoFirst = false; // only the very first scan after entering auto-selects
     this.autoAt = this.flipAt = 0;
     this.revealed.clear();
     this.popAt.clear();
@@ -268,6 +285,7 @@ export class Maint {
     if (this.flipAt && now >= this.flipAt) {
       this.flipAt = 0;
       this.readyShown = true;
+      this.firstShown = true;
       this.lastReady = this.report.readiness.status;
       this.hp = { from: 0, to: this.report.health, t0: now, shown: 0 };
       this._render();
@@ -344,8 +362,11 @@ export class Maint {
       return true;
     }
     if (e.key === 'Enter') {
-      if (e.target.closest?.('button, a, summary')) return false; // the browser activates the focused control
+      // a focused control of the panel or a floating form keeps its own Enter; any other focus (a start
+      // card or chip button clicked earlier) must not be re-clicked by the browser
+      if (e.target.closest?.('#diag button, #diag a, #diag summary, .mt-float button')) return false;
       e.preventDefault();
+      e.target.blur?.();
       this.cta();
       return true;
     }
@@ -535,9 +556,7 @@ export class Maint {
       this._stopPlay();
       this.scene.setProcedure(null);
       this.stepIdx = -1;
-      this.formOpen = false;
-      this.form.memo = this.form.measured = '';
-      this.form.minutes = '';
+      this._resetForm();
     }
     this.selId = next;
     this.scene.defectSel = next;
@@ -641,9 +660,10 @@ export class Maint {
 
   _recompute() {
     if (!this.def) return;
-    this.rows = this._rowsFor(this.key);
-    this.byId = new Map(this.rows.map((r) => [r.id, r]));
     this.parts = this._partsFor(this.def);
+    const codes = new Set(this.parts.map((p) => p.code));
+    this.rows = this._rowsFor(this.key).filter((r) => codes.has(r.part));
+    this.byId = new Map(this.rows.map((r) => [r.id, r]));
     this.report = this._diagnose(this.parts, this.rows, this._kb());
     this.fleet = this.scene.models
       .map((def, index) => ({ def, index }))
@@ -722,14 +742,15 @@ export class Maint {
   _nextOpen(fromId) {
     const ids = this.report?.order || [];
     const open = ids.filter((id) => id !== fromId && this.byId.get(id) && this.byId.get(id).status !== 'closed');
-    return open.length ? this.byId.get(open[0]) : null;
+    const todo = open.filter((id) => !this.byId.get(id).monitored);
+    return todo.length ? this.byId.get(todo[0]) : open.length ? this.byId.get(open[0]) : null;
   }
   /** Next equipment of the fleet to look at: the next one with unresolved defects, else simply the next. */
   _nextEquipment() {
     const f = this.fleet;
     if (f.length < 2) return null;
-    const k = Math.max(0, f.findIndex((x) => x.def === this.def));
-    const order = [...f.slice(k + 1), ...f.slice(0, k)];
+    const k = f.findIndex((x) => x.def === this.def);
+    const order = k < 0 ? f : [...f.slice(k + 1), ...f.slice(0, k)]; // a dropped model: every fleet member
     return order.find((x) => x.report.counts.open + x.report.counts.repaired > 0) || order[0];
   }
 
@@ -812,16 +833,21 @@ export class Maint {
     const r = this.byId.get(this.selId);
     const T = (x) => TYPES[x.type]?.ko || x.type;
     if (r && r.status === 'open') {
+      if (r.monitored && !this.formOpen) {
+        const nx = this._nextOpen(r.id);
+        if (nx && !nx.monitored) return { label: `다음 결함 · ${nx.id} ${T(nx)}`, run: () => this.selectDefect(nx.id) };
+      }
       if (this.tab !== 'repair') return { label: '수리 절차 보기', run: () => this._proceed(r.id) };
       const plan = this._getPlan();
-      if (!plan) return { label: '정비 결과 등록', run: () => this._openForm() };
+      if (this.formOpen) return { label: '결과 입력 후 등록 ↓', run: () => this._openForm() };
+      if (!plan) return { label: '정비 결과 입력', run: () => this._openForm() };
       const set = this._checks(), n = plan.steps.length;
       if (set.size < n) {
         if (this.stepIdx < 0) return { label: `다음 단계 (${plan.steps.findIndex((s) => !set.has(s.id)) + 1}/${n})`, run: () => this._nextStep() };
         const k = plan.steps.findIndex((s, j) => j !== this.stepIdx && !set.has(s.id));
         return { label: k < 0 ? `단계 완료 (${n}/${n})` : `다음 단계 (${k + 1}/${n})`, run: () => this._nextStep() };
       }
-      return { label: '정비 결과 등록', run: () => this._openForm() };
+      return { label: '정비 결과 입력', run: () => this._openForm() };
     }
     if (r && r.status === 'repaired') {
       if (r.source === 'sample') return { label: 'AI 재검사', run: () => this._reinspectAI(r.id) };
@@ -976,15 +1002,22 @@ export class Maint {
     this._renderNext();
   }
 
+  _resetForm() {
+    this.formOpen = false;
+    Object.assign(this.form, { result: 'done', reason: 'capability', memo: '', measured: '', minutes: null });
+  }
   _openForm() {
     const r = this.byId.get(this.selId);
     if (!r) return;
-    const plan = this._getPlan();
-    this.formOpen = true;
-    if (r.status === 'open') {
-      this.form.result = 'done';
-      this.form.minutes = plan ? String(plan.minutes) : '';
+    if (this.formOpen && this.tab === 'repair') {
+      // already open: never touch the technician's choices, just bring the submit button into view
+      const btn = this.$body.querySelector('.mt-form [data-act="submit"], .mt-form [data-act="reinspect"], .mt-form [data-act="pass"]');
+      btn?.scrollIntoView({ block: 'nearest' });
+      btn?.classList.add('air-hot');
+      setTimeout(() => btn?.classList.remove('air-hot'), 900);
+      return;
     }
+    this.formOpen = true;
     if (this.tab !== 'repair') {
       this.tab = 'repair';
       this._render(true);
@@ -999,7 +1032,8 @@ export class Maint {
     const plan = this._getPlan();
     const f = this.form;
     const by = String(f.by ?? this.by ?? '').trim();
-    const fb = { result: f.result, at: new Date().toISOString(), by, memo: String(f.memo || '').trim(), minutes: +f.minutes > 0 ? +f.minutes : plan?.minutes || 0 };
+    const typed = f.minutes == null ? plan?.minutes : f.minutes === '' ? null : +f.minutes; // untouched = plan value
+    const fb = { result: f.result, at: new Date().toISOString(), by, memo: String(f.memo || '').trim(), minutes: typed > 0 ? typed : null };
     if (f.result === 'fail') fb.reason = f.reason === 'supply' ? 'supply' : 'capability';
     if (f.result === 'partial' && +f.measured > 0) fb.measured = +f.measured;
     let out;
@@ -1012,15 +1046,15 @@ export class Maint {
     }
     if (by !== this.by) this._saveBy(by);
     const d = out.defect;
-    const msg = {
-      done: `#${r.id} 정비 완료 — 검사 대기 (재검사 합격 전 운용 금지)`,
-      partial: `#${r.id} 부분 수리 — 심각도 ${SEVERITY[d.sev]?.ko || d.sev}`,
-      false: `#${r.id} 오탐 처리 — AI 재학습 데이터로 기록`,
-    }[f.result] || out.log?.text || '정비 결과 등록';
+    const msg = d.monitored && d.status === 'open' && f.result === 'done'
+      ? `#${r.id} 관찰 등록 — 다음 정기 점검 시 재측정`
+      : {
+          done: `#${r.id} 정비 완료 — 검사 대기`,
+          partial: `#${r.id} 부분 수리 — 심각도 ${SEVERITY[d.sev]?.ko || d.sev}`,
+          false: r.source === 'manual' ? `#${r.id} 등록 취소 — 결함 아님` : `#${r.id} 오탐 처리 — AI 재학습 데이터로 기록`,
+        }[f.result] || out.log?.text || '정비 결과 등록';
     this.toast(msg, 2600);
-    this.formOpen = false;
-    this.form.memo = this.form.measured = '';
-    this.form.minutes = '';
+    this._resetForm();
     this._stopPlay();
     this.scene.setProcedure(null);
     this.scene.resetParts();
@@ -1063,7 +1097,7 @@ export class Maint {
       return;
     }
     if (by && by !== this.by) this._saveBy(by);
-    this.formOpen = false;
+    this._resetForm();
     this.toast(pass ? `#${r.id} 재검사 합격 → 해결` : `#${r.id} 재검사 불합격 → 재작업 지시`, 2600);
     this._commit(out.defect, out.log);
   }
@@ -1204,7 +1238,7 @@ export class Maint {
     const at = new Date().toISOString();
     const res = { added: 0, other: 0, skipped: [], renamed: [], ids: new Set() };
     for (const [key, list] of groups) {
-      const def = this.scene.models.find((m) => (m.key || `local:${m.name}`) === key);
+      const def = this.scene.models.find((m) => keyOf(m) === key);
       if (!def) {
         res.skipped.push(`${key}: 알 수 없는 장비 (${list.length}건)`);
         continue;
@@ -1215,7 +1249,7 @@ export class Maint {
       let n = 0;
       for (const raw of list) {
         const label = `${key === this.key ? '' : def.name + ' '}${raw?.id ?? '(id 없음)'}`;
-        const why = this._invalid(raw, codes);
+        const why = raw?.source === 'sample' ? '예시 데이터는 불러오지 않음' : raw?.status === 'closed' || raw?.fp ? '해결·오탐 처리된 결함' : this._invalid(raw, codes);
         if (why) {
           res.skipped.push(`${label}: ${why}`);
           continue;
@@ -1312,7 +1346,7 @@ export class Maint {
       defects: this._exportRows(),
       history: this._hist(),
       report: rep,
-      aiFeedback: this.rows.filter((r) => r.fp).map((r) => ({ id: r.id, part: r.part, type: r.type, sev: r.origSev || r.sev, p: r.p, n: r.n, conf: r.conf ?? null, source: r.source, label: '오탐 (결함 아님)' })),
+      aiFeedback: this.rows.filter((r) => r.fp && r.source !== 'manual').map((r) => ({ id: r.id, part: r.part, type: r.type, sev: r.origSev || r.sev, p: r.p, n: r.n, conf: r.conf ?? null, source: r.source, label: '오탐 (결함 아님)' })),
     };
     download(`${fileKey(this.key)}-maintenance-${today()}.json`, JSON.stringify(data, null, 2));
     this.toast('정비 기록을 JSON으로 저장했습니다');
@@ -1330,6 +1364,10 @@ export class Maint {
     this.toast(`${name}: 초기화했습니다`);
   }
 
+  /** True when this repaired defect keeps the equipment NO-GO until it passes re-inspection. */
+  _holds(id) {
+    return !!this.report?.readiness.holds?.includes(id);
+  }
   _statusKo(r) {
     return r.fp ? '오탐' : STATUS[r.status]?.ko || r.status;
   }
@@ -1386,7 +1424,7 @@ export class Maint {
       })
       .join('');
     const history = hist
-      .map((h) => `<tr><td>${esc(stamp(h.at, true))}</td><td>${esc(h.wo || '')}</td><td>${esc(KIND[h.kind] || h.kind || '')}</td><td>${esc(h.text || '')}${h.memo ? `<br><small>메모: ${esc(h.memo)}</small>` : ''}</td><td>${esc(h.by || '')}</td><td>${h.minutes ? `${h.minutes}분${h.planned ? ` / 계획 ${h.planned}분` : ''}` : ''}</td></tr>`)
+      .map((h) => `<tr><td>${esc(stamp(h.at, true))}</td><td>${esc(h.wo || '')}</td><td>${esc(KIND[h.kind] || h.kind || '')}</td><td>${esc(h.text || '')}${h.memo ? `<br><small>메모: ${esc(h.memo)}</small>` : ''}</td><td>${esc(h.by || '')}</td><td>${h.minutes ? `${h.minutes}분${h.planned ? ` / 계획 ${h.planned}분 (예시)` : ''}` : ''}</td></tr>`)
       .join('');
     const notice = sample || sim;
     const css = `
@@ -1404,7 +1442,7 @@ export class Maint {
 <h1>정비 진단 보고서 (시연용)</h1>
 <p class="meta">장비: ${esc(this._kb()?.equipment || this.def?.name || '')} · 작성 ${esc(stamp(new Date().toISOString(), true))} · 지식베이스: 예시 지식베이스${sample ? ' · 결함 데이터: 예시 포함' : ''}</p>
 <h2>장비 상태</h2>
-<p><span class="rd" style="color:${rd.color}">${esc(rdLabel(rd.status))}</span> &nbsp; 건강도 ${rep.health}% &nbsp; 결함 ${rep.counts.open + rep.counts.repaired}건 (P1 ${rep.counts.P1} · P2 ${rep.counts.P2} · P3 ${rep.counts.P3}) · 해결 ${rep.counts.closed}건</p>
+<p><span class="rd" style="color:${rd.color}">${esc(rdLabel(rd.status))}</span> &nbsp; 건강도 ${rep.health}% &nbsp; 미조치 결함 ${rep.counts.open}건 (P1 ${rep.counts.P1} · P2 ${rep.counts.P2} · P3 ${rep.counts.P3}) · 검사 대기 ${rep.counts.repaired}건 · 해결 ${rep.counts.closed}건</p>
 ${reasons}${deferred}
 <h2>전체 장비</h2>
 <table><tr><th>장비</th><th>운용 상태</th><th>건강도</th><th>미해결 결함</th><th>P1</th><th>해결</th></tr>${fleet}</table>
@@ -1466,7 +1504,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     this.$body.addEventListener('mouseover', (e) => this._netHover(e.target));
     this.$body.addEventListener('mouseleave', () => this._netHover(null));
     // buttons hand the keyboard back to the page, so M / N / Enter keep working after a click
-    this.$diag.addEventListener('click', (e) => e.target.closest?.('button')?.blur());
+    this.$diag.addEventListener('click', (e) => e.target.closest?.('button, summary, input[type="checkbox"], input[type="radio"]')?.blur());
     // any pointer input pauses the procedure playback (except the play button itself)
     addEventListener('pointerdown', (e) => {
       if (this.on && !e.target.closest?.('[data-act="play"]')) this.noteInput();
@@ -1596,6 +1634,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     if (escl) chips.push(chip(escl, 'warn'));
     if (r.condemned) chips.push(chip('불용 판정', 'col', SEVERITY.high.color));
     if (r.wait === 'supply' && !closed) chips.push(chip('보급 대기', 'warn'));
+    if (r.monitored && !closed) chips.push(chip('관찰 등록', 'col', SEVERITY.low.color));
     if (this._repeat(r)) chips.push(chip('반복 결함', 'warn'));
     const badge = closed ? GREEN : r.status === 'repaired' ? BLUE : S.color;
     const pop = this.popAt.has(r.id) && this.now - this.popAt.get(r.id) < 0.6 ? ' pop' : '';
@@ -1740,21 +1779,22 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
     return head + acc + safety + note + steps + det + this._htmlForm(r, plan);
   }
   _htmlForm(r, plan) {
-    if (r.status === 'closed') return `<div class="mt-form done"><p>${r.fp ? '오탐 처리 — AI 재학습 데이터로 기록됨' : '해결 — 재검사 합격'}</p></div>`;
+    if (r.status === 'closed') return `<div class="mt-form done"><p>${r.fp ? (r.source === 'manual' ? '등록 취소 — 결함 아님' : '오탐 처리 — AI 재학습 데이터로 기록됨') : '해결 — 재검사 합격'}</p></div>`;
     if (r.status === 'repaired') {
       if (r.source === 'sample') {
-        return `<div class="mt-form open insp"><p>정비 완료 — 검사 대기 · 재검사 합격 전 운용 금지</p><button class="mt-submit" data-act="reinspect" data-air${this.scan === 'running' ? ' disabled' : ''}>AI 재검사</button><small>시뮬레이션 재검사 — 예시 결함에만 사용합니다</small></div>`;
+        return `<div class="mt-form open insp"><p>정비 완료 — 검사 대기${this._holds(r.id) ? ' · 재검사 합격 전 운용 금지' : ''}</p><button class="mt-submit" data-act="reinspect" data-air${this.scan === 'running' ? ' disabled' : ''}>AI 재검사</button><small>시뮬레이션 재검사 — 예시 결함에만 사용합니다</small></div>`;
       }
-      return `<div class="mt-form open insp"><p>정비 완료 — 검사 대기 · 검사자가 확인한 결과를 입력하세요</p>
+      return `<div class="mt-form open insp"><p>정비 완료 — 검사 대기${this._holds(r.id) ? ' (합격 전 운용 금지)' : ''} · 검사자가 확인한 결과를 입력하세요</p>
         <label class="mt-insp">검사자<input type="text" data-f="insp" value="${esc(this.form.insp ?? this.by)}" placeholder="이름" /></label>
         <div class="mt-pf"><button class="mt-submit" data-act="pass" data-air>합격</button><button class="mt-submit bad" data-act="failInsp" data-air>불합격</button></div></div>`;
     }
     const f = this.form;
-    const minutes = f.minutes !== '' ? f.minutes : plan.minutes;
+    const minutes = f.minutes ?? plan.minutes;
     return `<div class="mt-form${this.formOpen ? ' open' : ''}" data-res="${esc(f.result)}">
       <button class="mt-form-bar" data-act="form" data-air>정비 결과 등록 <span>${this.formOpen ? '▾' : '▴'}</span></button>
       <div class="mt-form-body">
-        <div class="mt-radios">${RESULTS.map(([v, l]) => `<label data-air><input type="radio" name="mt-res" value="${v}"${f.result === v ? ' checked' : ''} />${l}</label>`).join('')}</div>
+        ${r.monitored ? `<p class="mt-mon">관찰 등록됨 (${esc(stamp(r.monitored))}) — 다음 정기 점검 때 다시 측정합니다</p>` : ''}
+        <div class="mt-radios">${resultsFor(r, plan.action).map(([v, l]) => `<label data-air><input type="radio" name="mt-res" value="${v}"${f.result === v ? ' checked' : ''} />${l}</label>`).join('')}</div>
         <div class="mt-grid">
           <label class="f-fail">사유<select data-f="reason"><option value="capability"${f.reason !== 'supply' ? ' selected' : ''}>능력 부족 → 상급 정비 의뢰</option><option value="supply"${f.reason === 'supply' ? ' selected' : ''}>부품 없음 → 보급 대기</option></select></label>
           <label class="f-partial">잔여 크기 (mm)<input type="number" data-f="measured" min="0" step="0.1" value="${esc(f.measured)}" placeholder="${mm(r.size)}" /></label>
@@ -1774,7 +1814,7 @@ ${notice ? `<div class="foot">${esc(NOTICE)}${sim ? ' · AI 재검사는 시뮬�
       .map((h) => {
         const r = h.id ? this.byId.get(h.id) : null;
         const rep = h.kind === 'add' && r && this._repeat(r);
-        const time = h.minutes ? `<span class="${h.planned && h.minutes > h.planned ? 'over' : ''}">${h.minutes}분${h.planned ? ` / 계획 ${h.planned}분` : ''}</span>` : '';
+        const time = h.minutes ? `<span class="${h.planned && h.minutes > h.planned ? 'over' : ''}">${h.minutes}분${h.planned ? ` / 계획 ${h.planned}분 (예시)` : ''}</span>` : '';
         return `<li class="k-${esc(h.kind)}"><div class="h1"><span class="tm">${esc(stamp(h.at))}</span>${h.wo ? `<b>${esc(h.wo)}</b>` : h.id ? `<b>#${esc(h.id)}</b>` : ''}<span class="kd">${esc(KIND[h.kind] || h.kind || '')}</span>${rep ? '<span class="chip warn">반복 결함</span>' : ''}</div><div class="h2">${esc(h.text || '')}</div>${h.by || time || h.memo ? `<div class="h3">${h.by ? `정비자 ${esc(h.by)}` : ''}${h.by && time ? ' · ' : ''}${time}${h.memo ? ` · 메모: ${esc(h.memo)}` : ''}</div>` : ''}</li>`;
       })
       .join('');

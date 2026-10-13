@@ -218,7 +218,7 @@ body.holo #plist li.sel span { color: #ffe2b0; }
   #loading { transform: translate(-50%, -50%); }
   #chips { max-width: calc(100vw - 20px); }
 }
-body.maint #panel .sliders, body.maint #panel .plist, body.maint #panel .btns { display: none; }
+body.maint #panel .sliders, body.maint #panel .plist, body.maint #panel .btns, body.maint #pc-hide, body.maint #pc-iso { display: none; }
 body.mt-pointer { cursor: pointer; }
 body.mt-adding, body.mt-adding * { cursor: crosshair; }
 .partcard .pc-maint { margin-top: 6px; font-size: 11.5px; font-weight: 600; }
@@ -378,6 +378,8 @@ svg.mt-net.hov .e.hi { opacity: 1; }
 .mt-form.open .mt-form-body { display: flex; }
 .mt-form.insp, .mt-form.done { padding: 10px; display: flex; flex-direction: column; gap: 7px; }
 .mt-form.insp p, .mt-form.done p { font-size: 11.5px; color: #c9e9f4; }
+.mt-mon { font-size: 11px; color: #ffe38a; background: rgba(255, 216, 77, 0.08); border-radius: 7px; padding: 5px 8px; }
+.mt-radios label:has(input[value="false"]) { grid-column: span 2; }
 .mt-form.done p { color: #a8f0c4; }
 .mt-form small { font-size: 10.5px; color: var(--muted); }
 .mt-radios { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
