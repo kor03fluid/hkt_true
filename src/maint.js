@@ -4,7 +4,7 @@
 // technician's feedback, kept in localStorage), runs the rule engine in diagnosis.js after every change and
 // presents the result: the #diag panel (readiness, fleet, next action, 결함 / 기능망 / 수리 / 이력 tabs), the
 // canvas markers / callout / scan HUD / procedure caption, the report and JSON import / export.
-// main.js keeps the input routing and calls the hooks (key, click, hover, pointBadge, airPoint, pointEnd,
+// main.js keeps the input routing and calls the hooks (onKey, click, hover, pointBadge, airPoint, pointEnd,
 // cta, release, noteInput, update, draw, hud); the 3D side is scene.js (setMaint, setDefects, focusDefect...).
 // Sample defects, confidences and the knowledge base are demonstration data and are labelled as such.
 import SAMPLE from '/web/defects.json';
@@ -346,8 +346,8 @@ export class Maint {
     return { text: `건강도 ${pr.health}% · ${st.ko} · 결함 ${pr.open}건`, color: st.color };
   }
 
-  /** Keyboard. Returns true when the key was used. */
-  key(e) {
+  /** Keyboard. Returns true when the key was used. (Not `key`: that is the model's storage key.) */
+  onKey(e) {
     const k = e.key.toLowerCase();
     if ((k === 'm' || e.code === 'KeyM') && !e.ctrlKey && !e.metaKey && !e.altKey) {
       this.toggle();

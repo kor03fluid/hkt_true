@@ -715,7 +715,7 @@ addEventListener('keydown', (e) => {
   const tg = e.target;
   if (tg.isContentEditable || tg.tagName === 'TEXTAREA' || tg.tagName === 'SELECT') return;
   if (tg.tagName === 'INPUT' && (tg.type !== 'range' || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight'))) return;
-  if (maint.key(e)) return;
+  if (maint.onKey(e)) return;
   const k = e.key.toLowerCase();
   if (e.key === ' ') {
     e.preventDefault();
