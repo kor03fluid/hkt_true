@@ -56,6 +56,7 @@ $('b-panel').addEventListener('click', () => document.body.classList.toggle('pan
 let bannerTimer = 0;
 let bannerKind = ''; // 'model' (about a model load), 'sticky' (a mode prompt), '' (anything else)
 function showBanner(msg, info = false, kind = '') {
+  if (!msg && kind && bannerKind !== kind) return; // clearing 'my' banner never removes someone else's message
   banner.textContent = msg;
   banner.className = info ? 'info' : '';
   banner.style.display = msg ? 'block' : 'none';
