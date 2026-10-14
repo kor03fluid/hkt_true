@@ -19,6 +19,7 @@ const PACKS = import.meta.glob('/web/models/*.json', { import: 'default', eager:
 const BINS = import.meta.glob('/web/models/*.bin', { query: '?url', import: 'default', eager: true });
 
 const WRAPPERS = new Set(['web', 'models', 'model', 'stl', 'stls', 'assets', 'cad']);
+const LOOSE = '\u0000loose'; // STL files dropped without a folder (never a real folder name)
 
 export const partLabel = (file) =>
   file
@@ -119,7 +120,7 @@ export async function localModels(source) {
   for (const { path, file } of files) {
     const segs = path.split('/');
     while (segs.length > 2 && WRAPPERS.has(segs[0].toLowerCase())) segs.shift();
-    const model = segs.length > 1 ? segs[0] : '드롭한 모델';
+    const model = segs.length > 1 ? segs[0] : LOOSE;
     const rel = segs.length > 1 ? segs.slice(1).join('/') : segs[0];
     if (/\.stl$/i.test(path)) {
       if (!byModel.has(model)) byModel.set(model, []);
@@ -134,6 +135,8 @@ export async function localModels(source) {
   }
   return [...byModel].map(([name, parts]) => {
     parts.sort((a, b) => a.file.localeCompare(b.file, undefined, { numeric: true }));
-    return finish(name, parts, manifests.get(name));
+    const loose = name === LOOSE;
+    // folder: what identifies 'the same folder opened again' (loose files never replace anything)
+    return { ...finish(loose ? '드롭한 모델' : name, parts, manifests.get(name)), folder: loose ? null : name };
   });
 }

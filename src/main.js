@@ -54,13 +54,16 @@ if (innerWidth <= 900) document.body.classList.add('panel-hide');
 $('b-panel').addEventListener('click', () => document.body.classList.toggle('panel-hide'));
 
 let bannerTimer = 0;
-function showBanner(msg, info = false) {
+let bannerKind = ''; // 'model' (about a model load), 'sticky' (a mode prompt), '' (anything else)
+function showBanner(msg, info = false, kind = '') {
   banner.textContent = msg;
   banner.className = info ? 'info' : '';
   banner.style.display = msg ? 'block' : 'none';
   banner.title = msg ? '눌러서 닫기' : '';
+  bannerKind = msg ? kind : '';
   clearTimeout(bannerTimer);
-  if (msg && info) bannerTimer = setTimeout(() => banner.textContent === msg && showBanner(''), 9000); // notices go away
+  // notices go away by themselves; errors and mode prompts stay
+  if (msg && info && kind !== 'sticky') bannerTimer = setTimeout(() => banner.textContent === msg && showBanner(''), 9000);
 }
 banner.addEventListener('click', () => showBanner('')); // errors stay until read and tapped
 let toastTimer = 0;
@@ -130,7 +133,7 @@ function addModels(defs) {
 function switchModel(i) {
   scene.setModel(i).catch((e) => {
     console.error(e);
-    showBanner(e.message || String(e));
+    showBanner(e.message || String(e), false, 'model');
   });
 }
 
@@ -141,10 +144,10 @@ scene.onLoading = (name, frac, label) => {
   $('ld-text').textContent = `${name} 불러오는 중… ${label}`;
 };
 
-scene.onError = (e) => showBanner(e?.message || String(e));
+scene.onError = (e) => showBanner(e?.message || String(e), false, 'model');
 scene.onModel = (i, entry) => {
   const def = entry.def;
-  if (banner.className !== 'info') showBanner(''); // an error about another model no longer applies
+  if (bannerKind === 'model') showBanner(''); // an error about another model no longer applies (others stay)
   $('m-name').textContent = def.name;
   $('m-sub').textContent = def.subtitle;
   $('m-about').textContent = def.manifest?.about || '';
@@ -153,7 +156,7 @@ scene.onModel = (i, entry) => {
   buildPartList();
   showPart(-1);
   toast(def.name);
-  if (entry.failed.length) showBanner(`읽지 못한 STL ${entry.failed.length}개: ${entry.failed.join(', ')}`, true);
+  if (entry.failed.length) showBanner(`읽지 못한 STL ${entry.failed.length}개: ${entry.failed.join(', ')}`, true, 'model');
   maint?.onModel(i, entry);
 };
 
@@ -329,10 +332,13 @@ async function openLocal(source) {
   // a folder opened again (same name) replaces its model instead of adding a duplicate chip
   let start = -1;
   for (const def of defs) {
-    const i = scene.models.findIndex((m) => !m.key && m.name === def.name);
+    const i = def.folder ? scene.models.findIndex((m) => !m.key && m.folder === def.folder) : -1;
     let k = i;
-    if (i >= 0) scene.replaceModel(i, def);
-    else k = addModels([def]);
+    if (i >= 0) {
+      scene.replaceModel(i, def);
+      const chip = chipBox.querySelector(`button[data-i="${i}"]`);
+      if (chip) chip.textContent = def.name; // its parts.json may name it differently now
+    } else k = addModels([def]);
     if (start < 0) start = k;
   }
   $('start').classList.add('gone');
@@ -387,7 +393,7 @@ maint = new Maint({
   showPart,
   switchModel,
   setActive,
-  banner: showBanner,
+  banner: (msg, info, kind) => showBanner(msg, info, kind),
   insets,
   relayout,
   setPartVisible,
@@ -403,15 +409,11 @@ let camOn = false;
 let lastVideoTime = -1;
 let perc = { hands: [] };
 
-let cameraStarting = false;
+let cameraStarting = false; // the getUserMedia phase only (the hand-model download may still be running)
+let trackerInit = null;
 async function startCamera() {
   if (cameraStarting || camOn) return;
-  cameraStarting = true;
-  try {
-    await startCameraNow();
-  } finally {
-    cameraStarting = false;
-  }
+  await startCameraNow();
 }
 async function startCameraNow() {
   $('start').classList.add('gone');
@@ -420,6 +422,7 @@ async function startCameraNow() {
     enterMouseMode('카메라는 http://localhost 또는 https 에서만 동작합니다.');
     return;
   }
+  cameraStarting = true;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }, audio: false });
     video.srcObject = stream;
@@ -427,6 +430,7 @@ async function startCameraNow() {
     camOn = true;
     // unplugged, privacy switch, another app took it: drop the hands it last saw, offer a restart
     for (const tr of stream.getVideoTracks()) tr.addEventListener('ended', cameraLost);
+    cameraStarting = false;
     ui.feed = true;
     $('t-feed').classList.add('on');
     document.body.classList.add('feed');
@@ -438,12 +442,15 @@ async function startCameraNow() {
       AbortError: '카메라를 다른 앱이 쓰고 있습니다. 그 앱을 닫고 왼쪽 「손 인식」을 눌러 다시 시도하세요.',
       SecurityError: '이 페이지에서는 카메라 사용이 막혀 있습니다.',
     }[e?.name] || '카메라를 찾지 못했습니다.';
+    cameraStarting = false;
     enterMouseMode(why);
     return;
   }
   setTracking('손 모델 로딩…', 'warn');
   try {
-    if (!tracker.ready) await tracker.init(); // a restart after the camera dropped keeps the loaded model
+    // one download, shared by a restart that happens while it runs; a restart later keeps the loaded model
+    if (!tracker.ready) await (trackerInit ??= tracker.init().finally(() => (trackerInit = null)));
+    if (!camOn) return; // the camera went away during the download: keep the 카메라 끊김 state and notice
     setTracking('켜짐', 'ok');
     showBanner('');
   } catch (e) {
@@ -636,7 +643,8 @@ function control(t, dt) {
     }
     // a held fist also brings moved parts home (maintenance: also releases the focus and the procedure)
     if (fistT > 0.6 && maint.on) {
-      if (maint.release()) toast('초점 해제');
+      const r = maint.release();
+      if (r) toast(r === 'add' ? '결함 추가 취소' : '초점 해제');
       fistT = -1e9; // once per fist
     } else if (fistT > 0.6 && scene.movedParts) {
       scene.resetParts();
@@ -717,8 +725,28 @@ let mouseLast = null;
 let mousePart = null; // { i, mode: 'move' | 'spin' }
 const onUi = (e) => e.target.closest?.('#panel,#chips,#toolbar,#start,#diag,#dg-open,.mt-float,#b-panel,#banner');
 
+// touch: one finger drags (rotate), two fingers pinch (zoom); every other pointer id is ignored
+const touches = new Map(); // pointerId -> { x, y }
+let dragId = null;
+let pinchDist = 0;
+const touchSpan = () => {
+  const [a, b] = [...touches.values()];
+  return Math.hypot(a.x - b.x, a.y - b.y);
+};
 addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || onUi(e)) return;
+  if (e.pointerType === 'touch') {
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (touches.size === 2) {
+      pinchDist = touchSpan(); // the second finger turns the drag into a pinch
+      mousePart = null;
+      scene.grabbed = -1;
+      return;
+    }
+    if (touches.size > 2) return;
+  }
+  if (draggingMouse) return; // a drag already runs (another pointer)
+  dragId = e.pointerId;
   draggingMouse = true;
   mouseStart = mouseLast = { x: e.clientX, y: e.clientY };
   mousePart = null;
@@ -732,6 +760,18 @@ addEventListener('pointerdown', (e) => {
   }
 });
 addEventListener('pointermove', (e) => {
+  if (touches.has(e.pointerId)) {
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (touches.size >= 2) {
+      const d = touchSpan();
+      if (pinchDist > 0 && d > 0) scene.zoomBy(d / pinchDist);
+      pinchDist = d;
+      scene.holdVel = true;
+      maint.noteInput();
+      return;
+    }
+  }
+  if (draggingMouse && e.pointerId !== dragId) return;
   if (!draggingMouse) {
     if (onUi(e) || perc.hands.some((h) => !h.held)) return;
     // maintenance: a defect badge / callout under the mouse wins over the part under it
@@ -749,8 +789,20 @@ addEventListener('pointermove', (e) => {
   }
   mouseLast = { x: e.clientX, y: e.clientY };
 });
-function pointerCancel() {
-  if (!draggingMouse) return;
+function endTouch(e) {
+  const pinched = touches.size >= 2;
+  touches.delete(e.pointerId);
+  if (touches.size < 2) pinchDist = 0;
+  if (pinched && touches.size === 1 && draggingMouse) {
+    // back to one finger: carry on from where it is now (no jump), and it is no longer a tap
+    const [only] = touches.values();
+    mouseLast = { ...only };
+    mouseStart = { x: -1e4, y: -1e4 };
+  }
+}
+function pointerCancel(e) {
+  endTouch(e);
+  if (!draggingMouse || e.pointerId !== dragId) return;
   draggingMouse = false;
   scene.holdVel = false;
   scene.grabbed = -1;
@@ -758,7 +810,16 @@ function pointerCancel() {
 }
 addEventListener('pointercancel', pointerCancel);
 addEventListener('pointerup', (e) => {
-  if (!draggingMouse) return;
+  const wasPinch = touches.size >= 2;
+  endTouch(e);
+  if (!draggingMouse || e.pointerId !== dragId) return;
+  if (wasPinch || touches.size) {
+    // the drag finger lifted out of a pinch: end without a click or a fling
+    draggingMouse = false;
+    scene.holdVel = false;
+    mousePart = null;
+    return;
+  }
   draggingMouse = false;
   scene.holdVel = false;
   scene.grabbed = -1;
@@ -776,9 +837,10 @@ addEventListener('pointerup', (e) => {
 addEventListener(
   'wheel',
   (e) => {
-    if (e.ctrlKey) e.preventDefault(); // a trackpad pinch: zoom the model, never the whole page
     if (onUi(e)) return;
-    scene.zoomBy(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0012)));
+    if (e.ctrlKey) e.preventDefault(); // a trackpad pinch over the model: zoom the model, never the whole page
+    const pinch = e.ctrlKey && e.deltaMode === 0 && Math.abs(e.deltaY) < 50; // a mouse notch is ~100
+    scene.zoomBy(Math.exp(-e.deltaY * (pinch ? 0.01 : 0.0012)));
   },
   { passive: false },
 );
@@ -789,11 +851,13 @@ addEventListener('keydown', (e) => {
   if (tg.isContentEditable || tg.tagName === 'TEXTAREA' || tg.tagName === 'SELECT') return;
   if (tg.tagName === 'INPUT' && (tg.type !== 'range' || ARROWS.includes(e.key))) return;
   // browser / OS combos (Ctrl+C, Cmd+H, Ctrl+2) are not ours; holding a toggle key must not flicker it
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.repeat && !['ArrowLeft', 'ArrowRight', '[', ']'].includes(e.key)) return;
+  // ([ and ] need AltGr / Option on many layouts: a typed symbol is not a combo)
+  const symbol = e.key.length === 1 && /[[\]{}\\|;:'",.<>/?`~!@#$%^&*()\-_=+]/.test(e.key);
+  if ((e.ctrlKey || e.metaKey || e.altKey) && !symbol) return;
+  if (e.repeat && !(['ArrowLeft', 'ArrowRight', '[', ']'].includes(e.key) || e.code === 'KeyN')) return;
   if (maint.onKey(e)) return;
-  // letter keys by position, so a Korean (or any non-Latin) layout works too
-  const k = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : e.key.toLowerCase();
+  // letters: as typed on Latin layouts (QWERTY, Dvorak, …), by position otherwise (Korean jamo etc.)
+  const k = /^[a-z]$/i.test(e.key) ? e.key.toLowerCase() : /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : e.key.toLowerCase();
   const digit = /^Digit[1-9]$/.test(e.code) ? +e.code.slice(5) : e.key >= '1' && e.key <= '9' ? +e.key : 0;
   if (e.key === ' ') {
     e.preventDefault();
@@ -930,7 +994,7 @@ function drawLabels() {
   if (hotOnly) pts = pts.filter((p) => p.i === scene.hover || p.i === scene.sel);
   if (!pts.length) return;
   const c = scene.centerScreen();
-  const panelR = W > 900 ? insets.l + 10 : 260; // the panel is 272 px wide (232 px on narrow screens)
+  const panelR = W > 900 ? insets.l + 10 : document.body.classList.contains('panel-hide') ? 0 : 252; // 232 px panel when open
   const rightEdge = W - insets.r;
   const left = [], right = [];
   for (const p of pts) (p.x < c.x ? left : right).push(p);
@@ -941,7 +1005,8 @@ function drawLabels() {
   const textW = (list) => Math.max(0, ...list.map((p) => ctx.measureText(p.name).width)) + 12;
   const colR = clamp(maxX + 80, panelR + 360, rightEdge - 16 - textW(right));
   const loL = panelR + 16 + textW(left), hiL = rightEdge - 400;
-  const colL = hiL < loL ? loL : clamp(minX - 80, loL, hiL); // narrow screen: stay right of the panel
+  // narrow screen: no room for both columns beside the model, keep the left one left of the centre
+  const colL = hiL < loL ? Math.max(16 + textW(left), Math.min(minX - 80, c.x - 40)) : clamp(minX - 80, loL, hiL);
   ctx.save();
   ctx.globalAlpha = hotOnly ? 1 : e;
   ctx.textBaseline = 'middle';

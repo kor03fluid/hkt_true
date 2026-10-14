@@ -656,13 +656,18 @@ export class StlScene {
       const def = this.models[i];
       const p = this._build(i).then(
         (e) => {
-          if (this.models[i] === def) this.cache.set(i, e);
-          else this._dispose(e); // the folder was opened again meanwhile
+          if (this.models[i] !== def) {
+            this._dispose(e); // the folder was opened again meanwhile
+            return e;
+          }
+          this.cache.set(i, e);
+          this._settleReplace(i, true);
           return e;
         },
         (err) => {
           if (this.cache.get(i) === p) this.cache.delete(i);
           this.onLoading?.(null); // never leave '… 불러오는 중' up after a failed download
+          if (this.models[i] === def) this._settleReplace(i, false);
           return Promise.reject(err);
         },
       );
@@ -679,13 +684,16 @@ export class StlScene {
     if (i === this.index && this.pending < 0) return;
     this.pending = i;
     this.pendingReady = false;
+    const def = this.models[i];
     try {
       await this.load(i);
     } catch (e) {
+      if (this.models[i] !== def) return; // superseded by a re-open: its own load reports
       if (this.pending === i) this.pending = -1;
       throw e;
     }
-    if (this.pending === i) this.pendingReady = true;
+    // ready only with a built entry of the current files (a re-open meanwhile starts its own load)
+    if (this.models[i] === def && this.pending === i && !(this.cache.get(i) instanceof Promise)) this.pendingReady = true;
   }
   next(d = 1) {
     const from = this.pending >= 0 ? this.pending : this.cursor ?? this.index;
@@ -695,13 +703,26 @@ export class StlScene {
   /** A local folder opened again: its new files replace the old model (no duplicate chip, GPU memory freed). */
   replaceModel(i, def) {
     const old = this.cache.get(i);
+    // keep what worked until the new files have loaded (a failed re-open puts it back)
+    const prev = this.replaced?.i === i ? this.replaced : { i, def: this.models[i], entry: old instanceof Promise ? null : old, index: this.index };
+    this.replaced = prev;
     this.cache.delete(i);
     this.models[i] = def;
-    if (old && !(old instanceof Promise)) {
-      if (old === this.entry) this.retired = old; // still on screen: freed once the new one is shown
-      else this._dispose(old);
-    }
     if (this.index === i) this.index = -1; // so setModel(i) loads the new files
+  }
+  /** load(i) finished for the replacing files: free the old entry, or on failure restore it. */
+  _settleReplace(i, ok) {
+    const r = this.replaced;
+    if (!r || r.i !== i) return;
+    this.replaced = null;
+    if (ok) {
+      if (r.entry && r.entry === this.entry) this.retired = r.entry; // still on screen: freed when the new one shows
+      else if (r.entry) this._dispose(r.entry);
+      return;
+    }
+    this.models[i] = r.def;
+    if (r.entry) this.cache.set(i, r.entry);
+    if (r.entry && r.entry === this.entry) this.index = r.index; // it never left the screen
   }
   _dispose(e) {
     for (const p of e?.parts || []) {
@@ -718,6 +739,7 @@ export class StlScene {
 
   _show(i) {
     const e = this.cache.get(i);
+    if (!e?.parts) return; // not built (yet): never swap in a half-loaded model, the old one stays
     if (this.entry) this.root.remove(this.entry.asm);
     if (this.retired && this.retired !== e) {
       this._dispose(this.retired);
@@ -761,8 +783,8 @@ export class StlScene {
   /** Hologram or solid look, for every loaded model. */
   setHolo(v) {
     this.holo = v;
-    for (const e of this.cache.values()) {
-      if (!e.parts) continue; // still loading
+    for (const e of new Set([...this.cache.values(), this.entry, this.retired, this.replaced?.entry])) {
+      if (!e?.parts) continue; // still loading
       for (const p of e.parts) {
         p.color = v ? p.colorHolo : p.colorSolid;
         p.look = '';

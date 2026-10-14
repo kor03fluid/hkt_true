@@ -411,7 +411,7 @@ export class Maint {
     this.noteInput();
     if (k === 'n' || e.code === 'KeyN' || e.key === ']') return this.step(1), true;
     if (e.key === '[') return this.step(-1), true;
-    if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (e.key === 'Delete') {
       if (this.selId) this._remove(this.selId);
       return true;
     }
@@ -572,7 +572,7 @@ export class Maint {
     if (this.addMode || this.float?.classList.contains('mt-add')) {
       this._closeFloat(); // ✊ cancels 결함 추가 (it can be started by hand, so it must end by hand)
       this._setAdd(false);
-      return true;
+      return 'add';
     }
     const sc = this.scene;
     const did = !!sc.focus || !!sc.proc || !!this.play || this.stepIdx >= 0;
@@ -665,7 +665,7 @@ export class Maint {
       // storage full or blocked: the session keeps working, but say once that nothing is kept
       if (!this.saveWarned) {
         this.saveWarned = true;
-        this.toast('저장 공간이 부족하거나 막혀 정비 기록이 저장되지 않습니다 (보고서·JSON 저장으로 보관하세요)', 5000);
+        this.banner('저장 공간이 부족하거나 막혀 정비 기록이 저장되지 않습니다 — 보고서·JSON 저장으로 보관하세요');
       }
       return false;
     }
@@ -900,9 +900,9 @@ export class Maint {
   }
   /** Same-origin bridge path first (squad_bridge.mjs / Vite proxy); when the user asks, also the default local bridge. */
   _liveConnect(user) {
-    // automatic: only on plain http (the bridge or the Vite proxy); GitHub Pages (https) and file:// would
-    // only log a failed request, so there it waits for the 연결 button
-    if (!user && location.protocol !== 'http:' && !this.liveBase) return;
+    // automatic: skipped only where no relay can answer (a file:// copy, GitHub Pages), which would just log a
+    // failed request; there it waits for the 연결 button (an https tunnel to the bridge still connects itself)
+    if (!user && !this.liveBase && (location.protocol === 'file:' || /\.github\.io$/i.test(location.hostname))) return;
     if (user && location.protocol === 'file:') {
       // the bridge does not answer Origin 'null' (any site's sandboxed frame sends it too)
       this.toast('파일로 연 화면은 연결할 수 없습니다 — node tools/squad_bridge.mjs 실행 후 http://localhost:8095/#maint 로 여세요', 4200);
@@ -950,18 +950,24 @@ export class Maint {
       console.error('SQUAD LINK reconcile failed', e);
       return;
     }
-    // rows first: a signal is marked as handled only once its row is stored (else it comes back next time)
-    const stored = res.add.length || res.bump.length || res.clear.length ? this._applyLive(res, mine) : true;
-    if (!res.add.length && !res.bump.length && !res.clear.length && synced) this._liveRecompute(mine);
-    const old = this.squad.seen;
-    if (res.seen.length !== old.length || res.seen.some((k, i) => k !== old[i])) {
-      this.squad.seen = res.seen; // this tab: handled (its rows are on screen)
-      if (stored) this._saveSquad(); // storage: only together with the rows, so a reload brings them back
+    // rows first, then the handled keys (in _applyLive, before any re-render): a signal is marked as handled
+    // only once its row is stored, else it would come back after a reload
+    if (res.add.length || res.bump.length || res.clear.length) this._applyLive(res, mine);
+    else {
+      this._takeSeen(res.seen, true);
+      if (synced) this._liveRecompute(mine);
     }
     this._renderLive();
     this._renderFleet();
   }
-  _applyLive({ add, bump, clear }, mine = false) {
+  /** Handled signal keys: always for this tab, in storage only when the rows they stand for are stored. */
+  _takeSeen(seen, stored) {
+    const old = this.squad.seen;
+    if (seen.length === old.length && seen.every((k, i) => k === old[i])) return;
+    this.squad.seen = seen;
+    if (stored) this._saveSquad();
+  }
+  _applyLive({ add, bump, clear, seen }, mine = false) {
     const at = new Date().toISOString();
     const name = (key) => this.scene.models.find((m) => m.key === key)?.name || key;
     const notes = [], fresh = [], bumped = new Map();
@@ -1008,6 +1014,7 @@ export class Maint {
     const models = new Set([...add, ...bump, ...clear].map((x) => x.model));
     for (const model of models) this._st(model).seq++;
     const stored = this._save();
+    this._takeSeen(seen, stored); // before the re-render: another tab must never see the rows without their keys
     this._liveRecompute(models.has(this.key) || mine); // other equipment only: keep the panel body (and any input) as is
     for (const id of fresh) this.popAt.set(id, nowS());
     if (notes.length && this.on) this.toast(`실시간 · ${notes[0]}${notes.length > 1 ? ` 외 ${notes.length - 1}건` : ''}`, 3600);
@@ -1436,7 +1443,7 @@ export class Maint {
     if (on && !this.scene.entry) return;
     this.addMode = on;
     document.body.classList.toggle('mt-adding', on);
-    this.banner(on ? '결함 위치를 클릭하세요 · Esc 취소' : '', true);
+    this.banner(on ? '결함 위치를 클릭하세요 · Esc 또는 ✊ 취소' : '', true, 'sticky');
     if (!on && this.float?.classList.contains('mt-add')) this._closeFloat();
   }
   _addForm(hit, x, y) {
