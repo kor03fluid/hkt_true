@@ -331,7 +331,8 @@ body.maint #diag.collapsed + #dg-open { display: block; }
 .mt-row.sel { border-color: rgba(191, 246, 255, 0.6); background: rgba(191, 246, 255, 0.08); }
 .mt-row.closed { opacity: 0.55; }
 .mt-row.pop { animation: mt-pop 0.25s ease-out; }
-@keyframes mt-pop { from { transform: translateX(14px); opacity: 0; } to { transform: none; opacity: 1; } }
+/* enter from the left: a rightward start would overflow .dg-body, and scrollIntoView then scrolls the list sideways */
+@keyframes mt-pop { from { transform: translateX(-14px); opacity: 0; } to { transform: none; opacity: 1; } }
 .mt-num { flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-size: 11px; font-weight: 700; margin-top: 1px; }
 .mt-main { flex: 1; min-width: 0; }
 .mt-l1 { display: flex; align-items: baseline; gap: 6px; }
