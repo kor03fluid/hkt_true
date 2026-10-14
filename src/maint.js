@@ -50,6 +50,25 @@ function resultsFor(r, action, priority) {
   out.push(['false', r.source === 'manual' ? '등록 취소(결함 아님)' : signalRow(r) ? '이상 없음(점검 종료)' : '오탐(결함 아님)']);
   return out;
 }
+const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+const own = (o, k) => k != null && Object.prototype.hasOwnProperty.call(o, k);
+/** The saved store with every slot in the expected shape (rows / history entries that are not objects dropped). */
+function cleanStore(v) {
+  const out = {};
+  if (!isObj(v)) return out;
+  for (const [key, s] of Object.entries(v)) {
+    if (!isObj(s)) continue;
+    out[key] = {
+      ...s,
+      added: Array.isArray(s.added) ? s.added.filter((r) => isObj(r) && r.id != null && r.part != null) : [],
+      overrides: isObj(s.overrides) ? Object.fromEntries(Object.entries(s.overrides).filter(([, o]) => isObj(o))) : {},
+      removed: Array.isArray(s.removed) ? s.removed.filter((x) => typeof x === 'string' || typeof x === 'number') : [],
+      history: Array.isArray(s.history) ? s.history.filter(isObj) : [],
+      seq: Number.isFinite(s.seq) ? s.seq : 0,
+    };
+  }
+  return out;
+}
 /** Storage key of a model: repo models by file, dropped ones by name + their part list. */
 function keyOf(def) {
   if (def.key) return def.key;
@@ -392,7 +411,7 @@ export class Maint {
     this.noteInput();
     if (k === 'n' || e.code === 'KeyN' || e.key === ']') return this.step(1), true;
     if (e.key === '[') return this.step(-1), true;
-    if (e.key === 'Delete') {
+    if (e.key === 'Delete' || e.key === 'Backspace') {
       if (this.selId) this._remove(this.selId);
       return true;
     }
@@ -550,6 +569,11 @@ export class Maint {
 
   /** FIST / R: release the focus, end the procedure view, parts back home. True if anything changed. */
   release() {
+    if (this.addMode || this.float?.classList.contains('mt-add')) {
+      this._closeFloat(); // ✊ cancels 결함 추가 (it can be started by hand, so it must end by hand)
+      this._setAdd(false);
+      return true;
+    }
     const sc = this.scene;
     const did = !!sc.focus || !!sc.proc || !!this.play || this.stepIdx >= 0;
     this._stopPlay();
@@ -599,6 +623,8 @@ export class Maint {
       const i = this._pidx(r.part);
       if (i >= 0 && this.scene.sel !== i) this.select(i);
       if (focus) this.scene.focusDefect(r.id);
+      // a row past the per-part slot cap gets its surface mark once it is the selected one
+      if (this.scene.defects.some((d) => d.id === r.id && !d.drawn && d.status !== 'closed')) this._sync();
     } else this.scene.focusDefect(null);
     this._render();
   }
@@ -624,8 +650,7 @@ export class Maint {
     try {
       const raw = localStorage.getItem(STORE) || '{}';
       this._storeRaw = raw;
-      const v = JSON.parse(raw);
-      return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+      return cleanStore(JSON.parse(raw));
     } catch {
       return {};
     }
@@ -635,8 +660,14 @@ export class Maint {
       const raw = JSON.stringify(this.store);
       localStorage.setItem(STORE, raw);
       this._storeRaw = raw;
+      return true;
     } catch {
-      /* storage full or blocked: the session keeps working */
+      // storage full or blocked: the session keeps working, but say once that nothing is kept
+      if (!this.saveWarned) {
+        this.saveWarned = true;
+        this.toast('저장 공간이 부족하거나 막혀 정비 기록이 저장되지 않습니다 (보고서·JSON 저장으로 보관하세요)', 5000);
+      }
+      return false;
     }
   }
   /** Another tab of the viewer wrote the store (both follow the same live stream): take its version first. */
@@ -670,9 +701,9 @@ export class Maint {
   }
   _st(key = this.key) {
     let s = this.store[key];
-    if (!s || typeof s !== 'object') s = this.store[key] = {};
+    if (!isObj(s)) s = this.store[key] = {};
     if (!Array.isArray(s.added)) s.added = [];
-    if (!s.overrides || typeof s.overrides !== 'object') s.overrides = {};
+    if (!isObj(s.overrides)) s.overrides = {};
     if (!Array.isArray(s.removed)) s.removed = [];
     if (!Array.isArray(s.history)) s.history = [];
     if (!Number.isFinite(s.seq)) s.seq = 0;
@@ -680,7 +711,7 @@ export class Maint {
   }
   _hist(key = this.key) {
     const h = this.store[key]?.history;
-    return Array.isArray(h) ? h : [];
+    return Array.isArray(h) ? h.filter(isObj) : [];
   }
   _kb(key = this.key) {
     return KB[key] && typeof KB[key] === 'object' && !Array.isArray(KB[key]) ? KB[key] : null;
@@ -725,16 +756,22 @@ export class Maint {
     this.rows = this._rowsFor(this.key).filter((r) => codes.has(r.part));
     this.byId = new Map(this.rows.map((r) => [r.id, r]));
     this.report = this._diagnose(this.parts, this.rows, this._kb());
+    // other equipment: only rows on parts it has (an old store may name a part that no longer exists)
+    const fleetRows = (def) => {
+      const parts = this._partsFor(def), codes = new Set(parts.map((p) => p.code));
+      return { parts, rows: this._rowsFor(def.key).filter((r) => codes.has(r.part)) };
+    };
     this.fleet = this.scene.models
       .map((def, index) => ({ def, index }))
       .filter(({ def }) => def.key && !def.key.startsWith('local:'))
-      .map(({ def, index }) => ({
-        def, index, key: def.key,
-        report: def === this.def ? this.report : this._diagnose(this._partsFor(def), this._rowsFor(def.key), this._kb(def.key)),
-      }));
+      .map(({ def, index }) => {
+        if (def === this.def) return { def, index, key: def.key, report: this.report, rows: this.rows };
+        const { parts, rows } = fleetRows(def);
+        return { def, index, key: def.key, report: this._diagnose(parts, rows, this._kb(def.key)), rows };
+      });
     // work left per equipment (open defects not merely under monitoring, plus repaired ones awaiting inspection)
     for (const f of this.fleet) {
-      const rows = f.def === this.def ? this.rows : this._rowsFor(f.key);
+      const rows = f.rows;
       f.todo = rows.filter((r) => r.status === 'repaired' || (r.status === 'open' && !(r.monitored && f.report.defects[r.id]?.action === 'monitor'))).length;
     }
     if (this.selId && !this.byId.has(this.selId)) {
@@ -863,6 +900,9 @@ export class Maint {
   }
   /** Same-origin bridge path first (squad_bridge.mjs / Vite proxy); when the user asks, also the default local bridge. */
   _liveConnect(user) {
+    // automatic: only on plain http (the bridge or the Vite proxy); GitHub Pages (https) and file:// would
+    // only log a failed request, so there it waits for the 연결 button
+    if (!user && location.protocol !== 'http:' && !this.liveBase) return;
     if (user && location.protocol === 'file:') {
       // the bridge does not answer Origin 'null' (any site's sandboxed frame sends it too)
       this.toast('파일로 연 화면은 연결할 수 없습니다 — node tools/squad_bridge.mjs 실행 후 http://localhost:8095/#maint 로 여세요', 4200);
@@ -910,13 +950,14 @@ export class Maint {
       console.error('SQUAD LINK reconcile failed', e);
       return;
     }
+    // rows first: a signal is marked as handled only once its row is stored (else it comes back next time)
+    const stored = res.add.length || res.bump.length || res.clear.length ? this._applyLive(res, mine) : true;
+    if (!res.add.length && !res.bump.length && !res.clear.length && synced) this._liveRecompute(mine);
     const old = this.squad.seen;
     if (res.seen.length !== old.length || res.seen.some((k, i) => k !== old[i])) {
-      this.squad.seen = res.seen;
-      this._saveSquad();
+      this.squad.seen = res.seen; // this tab: handled (its rows are on screen)
+      if (stored) this._saveSquad(); // storage: only together with the rows, so a reload brings them back
     }
-    if (res.add.length || res.bump.length || res.clear.length) this._applyLive(res, mine);
-    else if (synced) this._liveRecompute(mine);
     this._renderLive();
     this._renderFleet();
   }
@@ -926,7 +967,7 @@ export class Maint {
     const notes = [], fresh = [], bumped = new Map();
     for (const { model, row, sig } of add) {
       const st = this._st(model);
-      const taken = new Set([...this._rowsFor(model).map((r) => r.id), ...st.removed, ...st.history.map((h) => h.id)]);
+      const taken = new Set([...this._rowsFor(model).map((r) => r.id), ...st.added.map((r) => r.id), ...st.removed, ...this._hist(model).map((h) => h.id)]);
       row.id = this._newId('S', taken);
       st.added.push(row);
       const R = RULES[sig.kind];
@@ -966,10 +1007,11 @@ export class Maint {
     }
     const models = new Set([...add, ...bump, ...clear].map((x) => x.model));
     for (const model of models) this._st(model).seq++;
-    this._save();
+    const stored = this._save();
     this._liveRecompute(models.has(this.key) || mine); // other equipment only: keep the panel body (and any input) as is
     for (const id of fresh) this.popAt.set(id, nowS());
     if (notes.length && this.on) this.toast(`실시간 · ${notes[0]}${notes.length > 1 ? ` 외 ${notes.length - 1}건` : ''}`, 3600);
+    return stored;
   }
   /** Recompute for a change that did not come from this tab's user (live signal, another tab). */
   _liveRecompute(body) {
@@ -986,12 +1028,12 @@ export class Maint {
     const { soldiers, env } = nodesOf(snap, this.link.config);
     const out = [];
     for (const node of soldiers) {
-      const s = (snap?.soldiers || []).find((x) => x.assigned_node_id === node);
+      const s = (Array.isArray(snap?.soldiers) ? snap.soldiers : []).find((x) => x?.assigned_node_id === node);
       const st = s?.connection_state || 'waiting';
       out.push({ node, cls: 'soldier', model: this.squad.map[node] || '', state: st, ko: { connected: '연결', lost: '두절', waiting: '대기' }[st] || st, color: { connected: GREEN, lost: SEVERITY.mid.color }[st] || GREY });
     }
     for (const node of env) {
-      const t = (snap?.telemetry || []).find((x) => x.node_id === node && x.packet_type === 'environment');
+      const t = (Array.isArray(snap?.telemetry) ? snap.telemetry : []).find((x) => x?.node_id === node && x.packet_type === 'environment');
       const st = !t ? 'none' : t.data_stale ? 'stale' : 'recv';
       out.push({ node, cls: 'env', model: this.squad.map[node] || '', state: st, ko: { recv: '수신', stale: '끊김', none: '미수신' }[st], color: st === 'recv' ? GREEN : st === 'stale' ? SEVERITY.mid.color : GREY });
     }
@@ -1408,7 +1450,7 @@ export class Maint {
     // a manual entry is a physical defect with a size: the SQUAD LINK signal types are not offered
     const opts = (table, cur) => Object.entries(table).filter(([, v]) => !v.signal).map(([k, v]) => `<option value="${k}"${k === cur ? ' selected' : ''}>${esc(v.ko)}</option>`).join('');
     el.innerHTML = `
-      <div class="mf-h"><b>결함 추가</b><span>${esc(this._label(hit.code))}</span><button data-fa="x" title="취소 (Esc)">✕</button></div>
+      <div class="mf-h"><b>결함 추가</b><span>${esc(this._label(hit.code))}</span><button data-fa="x" data-air title="취소 (Esc · 주먹)">✕</button></div>
       <p class="mf-xyz">STL ${hit.p.map((v) => (+v).toFixed(2)).join(', ')} mm</p>
       <div class="mf-grid">
         <label>유형<select data-ff="type">${opts(TYPES, f.type)}</select></label>
@@ -1443,8 +1485,14 @@ export class Maint {
       else if (a === 'ok') this._addRow(hit);
     });
     el.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) return; // the IME is still composing (Hangul)
       if (e.key === 'Escape') this.escape();
-      else if (e.key === 'Enter' && e.target.tagName === 'INPUT') this._addRow(hit);
+      else if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
+        e.preventDefault();
+        e.stopPropagation(); // the same Enter must not also run the next action
+        this.keysHeldUntil = nowS() + 0.4; // nor its twin keydown some IMEs send right after
+        this._addRow(hit);
+      }
     });
     preview();
     this._placeFloat(el, x, y);
@@ -1461,7 +1509,7 @@ export class Maint {
     const f = this.addVals;
     this._syncStore();
     const st = this._st();
-    const taken = new Set([...this.rows.map((r) => r.id), ...st.added.map((r) => r.id), ...st.removed, ...st.history.map((h) => h.id)]);
+    const taken = new Set([...this.rows.map((r) => r.id), ...st.added.map((r) => r.id), ...st.removed, ...this._hist().map((h) => h.id)]);
     const id = this._newId('U', taken);
     const at = new Date().toISOString();
     const row = {
@@ -1535,7 +1583,7 @@ export class Maint {
       }
       const codes = new Set(this._partsFor(def).map((p) => p.code));
       const st = this._st(key);
-      const taken = new Set([...this._rowsFor(key).map((r) => r.id), ...st.removed, ...st.history.map((h) => h.id)]);
+      const taken = new Set([...this._rowsFor(key).map((r) => r.id), ...st.removed, ...this._hist(key).map((h) => h.id)]);
       let n = 0;
       for (const raw of list) {
         const label = `${key === this.key ? '' : def.name + ' '}${raw?.id ?? '(id 없음)'}`;
@@ -1560,7 +1608,7 @@ export class Maint {
         // an exported SQUAD LINK row stays a field signal (no AI wording); its key is dropped so it never
         // stands in for the server's event in the seen list
         const lv = raw.source === 'live' && raw.live && typeof raw.live === 'object' ? raw.live : null;
-        if (lv && TYPES[raw.type]?.signal && RULES[lv.kind]) {
+        if (lv && TYPES[raw.type]?.signal && own(RULES, lv.kind)) {
           row.source = 'live';
           row.live = { kind: lv.kind, node: String(lv.node || ''), sim: !!lv.sim, count: Math.max(1, Math.floor(+lv.count) || 1), first: String(lv.first || at), last: String(lv.last || at) };
         }
@@ -1593,8 +1641,8 @@ export class Maint {
   }
   _invalid(r, codes) {
     if (!r || typeof r !== 'object') return '형식 오류';
-    if (!TYPES[r.type]) return `유형 '${r.type}' 미지원`;
-    if (!SEVERITY[r.sev]) return `심각도 '${r.sev}' 미지원`;
+    if (!own(TYPES, r.type)) return `유형 '${r.type}' 미지원`;
+    if (!own(SEVERITY, r.sev)) return `심각도 '${r.sev}' 미지원`;
     if (!(+r.size > 0)) return '크기 없음';
     if (!isVec(r.p)) return '좌표(p) 오류';
     if (!codes.has(r.part)) return `부품 '${r.part}' 없음`;

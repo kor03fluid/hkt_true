@@ -479,6 +479,8 @@ export class StlScene {
         }
         if (!geo.attributes.position?.count) throw new Error('empty mesh');
         geo.computeBoundingBox();
+        const bb = geo.boundingBox;
+        if (![bb.min.x, bb.min.y, bb.min.z, bb.max.x, bb.max.y, bb.max.z].every(Number.isFinite)) throw new Error('invalid coordinates (NaN / Infinity)');
         raw.push({ src, geo, info: man[src.file] || man[src.file.split('/').pop()] || {} });
       } catch (e) {
         console.warn('part load failed:', src.file, e);
@@ -651,9 +653,18 @@ export class StlScene {
   /** Loads (once) and returns the built model. */
   load(i) {
     if (!this.cache.has(i)) {
+      const def = this.models[i];
       const p = this._build(i).then(
-        (e) => (this.cache.set(i, e), e),
-        (err) => (this.cache.delete(i), Promise.reject(err)),
+        (e) => {
+          if (this.models[i] === def) this.cache.set(i, e);
+          else this._dispose(e); // the folder was opened again meanwhile
+          return e;
+        },
+        (err) => {
+          if (this.cache.get(i) === p) this.cache.delete(i);
+          this.onLoading?.(null); // never leave '… 불러오는 중' up after a failed download
+          return Promise.reject(err);
+        },
       );
       this.cache.set(i, p);
     }
@@ -664,6 +675,7 @@ export class StlScene {
     const n = this.models.length;
     if (!n) return;
     i = ((i % n) + n) % n;
+    this.cursor = i;
     if (i === this.index && this.pending < 0) return;
     this.pending = i;
     this.pendingReady = false;
@@ -676,12 +688,41 @@ export class StlScene {
     if (this.pending === i) this.pendingReady = true;
   }
   next(d = 1) {
-    this.setModel((this.pending >= 0 ? this.pending : this.index) + d).catch((e) => console.error(e));
+    const from = this.pending >= 0 ? this.pending : this.cursor ?? this.index;
+    this.setModel(from + d).catch((e) => (this.onError ? this.onError(e) : console.error(e)));
+  }
+
+  /** A local folder opened again: its new files replace the old model (no duplicate chip, GPU memory freed). */
+  replaceModel(i, def) {
+    const old = this.cache.get(i);
+    this.cache.delete(i);
+    this.models[i] = def;
+    if (old && !(old instanceof Promise)) {
+      if (old === this.entry) this.retired = old; // still on screen: freed once the new one is shown
+      else this._dispose(old);
+    }
+    if (this.index === i) this.index = -1; // so setModel(i) loads the new files
+  }
+  _dispose(e) {
+    for (const p of e?.parts || []) {
+      p.mesh.geometry.disposeBoundsTree?.();
+      p.mesh.geometry.dispose();
+      p.mat?.dispose();
+      p.holoMat?.dispose();
+      if (p.edges) {
+        p.edges.geometry.dispose();
+        p.edges.material.dispose();
+      }
+    }
   }
 
   _show(i) {
     const e = this.cache.get(i);
     if (this.entry) this.root.remove(this.entry.asm);
+    if (this.retired && this.retired !== e) {
+      this._dispose(this.retired);
+      this.retired = null;
+    }
     this.entry = e;
     this.parts = e.parts;
     this.index = i;
@@ -699,7 +740,12 @@ export class StlScene {
     this.uScanY.value = -1e5;
     for (const p of e.parts) (p.remove = 0), (p.look = '');
     this.resetView(true);
-    this.onModel?.(i, e);
+    try {
+      this.onModel?.(i, e);
+    } catch (err) {
+      console.error(err); // a UI callback must not leave the swap half done
+      this.onError?.(err);
+    }
   }
 
   // ------------------------------------------------------------------ interaction API
@@ -748,13 +794,15 @@ export class StlScene {
     this.preFocusScale = null;
     this.anchorExact = false;
     if (snap) this.anchorOff.set(0, 0, 0);
-    const v = { ...DEFAULT_VIEW, ...this.entry?.def.manifest?.view };
-    this.rot.x = v.x;
-    this.rot.y = v.y;
-    this.rot.z = v.z;
+    const mv = this.entry?.def.manifest?.view;
+    const v = mv && typeof mv === 'object' ? mv : {};
+    const num = (x, d) => (x !== null && x !== '' && Number.isFinite(+x) ? +x : d);
+    this.rot.x = num(v.x, DEFAULT_VIEW.x);
+    this.rot.y = num(v.y, DEFAULT_VIEW.y);
+    this.rot.z = num(v.z, DEFAULT_VIEW.z ?? 0);
     this.vel.x = this.vel.y = 0;
-    this.scaleTarget = v.zoom;
-    if (snap) this.scale = v.zoom;
+    this.scaleTarget = clamp(num(v.zoom, DEFAULT_VIEW.zoom ?? 1), 0.3, 6);
+    if (snap) this.scale = this.scaleTarget;
     this.resetParts(snap);
     this.setSel(-1);
   }
@@ -824,7 +872,10 @@ export class StlScene {
     const out = [];
     const target = {};
     const tri = new THREE.Triangle();
-    for (const d of list || []) {
+    // the selected / focused defect is placed first, so the per-part slot cap never hides the one in use
+    const want = this.focus?.id ?? this.defectSel;
+    const rows = want == null ? list || [] : [...(list || [])].sort((a, b) => (b.id === want) - (a.id === want));
+    for (const d of rows) {
       const p = this.parts[d.part];
       if (!p || !Array.isArray(d.p)) continue;
       const geo = p.mesh.geometry;
@@ -872,13 +923,17 @@ export class StlScene {
           u.uDefA.value[rd.slot].set(local.x, local.y, local.z, rd.r);
           u.uDefB.value[rd.slot].set(n.x, n.y, n.z, DEFECT_CODES[d.type] ?? 0);
           u.uDefC.value[rd.slot].set(t.x, t.y, t.z, (hashId(d.id) % 1000) / 1000 * 97.3);
-        } else console.warn(`part ${p.name}: more than ${MAX_DEF} defects, ${d.id} not drawn`);
+        } // past the cap: no surface mark, but a pin (defectScreen) so it can still be found and selected
       }
       if (!was) rd.world.copy(local).applyMatrix4(p.mesh.matrixWorld);
       out.push(rd);
     }
     this.defects = out;
-    if (this.focus) this.focus = out.find((d) => d.id === this.focus.id) || null;
+    if (this.focus) {
+      const f = out.find((d) => d.id === this.focus.id);
+      if (f) this.focus = f;
+      else this.focusDefect(null);
+    }
     this._defectUniforms();
     return out;
   }
@@ -984,7 +1039,7 @@ export class StlScene {
     const cam = this.camera.position;
     const out = [];
     for (const d of this.defects) {
-      if (!d.drawn || !this.parts[d.part].pivot.visible) continue;
+      if ((!d.drawn && d.status === 'closed') || !this.parts[d.part].pivot.visible) continue;
       const w = d.world;
       const toCam = cam.clone().sub(w);
       const dist = toCam.length();
@@ -1243,7 +1298,7 @@ export class StlScene {
       for (const d of this.defects) d.world.add(moved);
     }
     for (const d of this.defects) {
-      if (this.scan && d.revealT === 0 && d.drawn && d.world.y >= this.uScanY.value) {
+      if (this.scan && d.revealT === 0 && (d.drawn || d.status !== 'closed') && d.world.y >= this.uScanY.value) {
         d.revealT = 1;
         this.onReveal?.(d.id);
       }

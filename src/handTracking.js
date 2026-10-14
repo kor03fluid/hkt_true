@@ -11,7 +11,8 @@ const CDN_MODEL =
   'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
 async function localExists(url) {
-  if (location.protocol === 'file:') return false; // opened from disk (single-file build): no local copies
+  // the single-file build ships no local copies (it is opened from disk or served by squad_bridge.mjs)
+  if (location.protocol === 'file:' || import.meta.env.MODE === 'single') return false;
   try {
     const r = await fetch(url, { method: 'HEAD' });
     const type = r.headers.get('content-type') || '';

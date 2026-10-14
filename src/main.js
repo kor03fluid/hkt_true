@@ -49,11 +49,20 @@ addEventListener('resize', () => {
   relayout();
 });
 
+// narrow screens: the left panel starts folded so the model is visible (☰ opens it)
+if (innerWidth <= 900) document.body.classList.add('panel-hide');
+$('b-panel').addEventListener('click', () => document.body.classList.toggle('panel-hide'));
+
+let bannerTimer = 0;
 function showBanner(msg, info = false) {
   banner.textContent = msg;
   banner.className = info ? 'info' : '';
   banner.style.display = msg ? 'block' : 'none';
+  banner.title = msg ? '눌러서 닫기' : '';
+  clearTimeout(bannerTimer);
+  if (msg && info) bannerTimer = setTimeout(() => banner.textContent === msg && showBanner(''), 9000); // notices go away
 }
+banner.addEventListener('click', () => showBanner('')); // errors stay until read and tapped
 let toastTimer = 0;
 function toast(msg, ms = 1600) {
   const el = $('toast');
@@ -69,7 +78,11 @@ try {
   scene = new StlScene($('scene'));
 } catch (e) {
   console.error(e);
-  showBanner('WebGL을 쓸 수 없습니다. 하드웨어 가속이 켜진 최신 Chrome / Edge / Firefox를 사용하세요.');
+  const msg = 'WebGL을 쓸 수 없습니다. 하드웨어 가속이 켜진 최신 Chrome / Edge / Firefox를 사용하세요.';
+  showBanner(msg);
+  // the start card covers the banner and its buttons would do nothing: put the message there instead
+  $('found').textContent = msg;
+  document.querySelectorAll('#start button').forEach((b) => (b.disabled = true));
   throw e;
 }
 
@@ -128,8 +141,10 @@ scene.onLoading = (name, frac, label) => {
   $('ld-text').textContent = `${name} 불러오는 중… ${label}`;
 };
 
+scene.onError = (e) => showBanner(e?.message || String(e));
 scene.onModel = (i, entry) => {
   const def = entry.def;
+  if (banner.className !== 'info') showBanner(''); // an error about another model no longer applies
   $('m-name').textContent = def.name;
   $('m-sub').textContent = def.subtitle;
   $('m-about').textContent = def.manifest?.about || '';
@@ -177,12 +192,13 @@ function buildPartList() {
   const ul = $('plist');
   ul.innerHTML = '';
   // grouped by series (B / Y / H / L, common Pod / helmet specific), in the order of the group table
-  const groups = scene.entry?.def.manifest?.groups || [];
+  const g0 = scene.entry?.def.manifest?.groups;
+  const groups = Array.isArray(g0) ? g0.filter((g) => g && typeof g === 'object') : [];
   const order = (p) => {
     const k = groups.findIndex((g) => g.id === p.group);
     return k < 0 ? groups.length : k;
   };
-  const sorted = [...scene.parts].sort((a, b) => order(a) - order(b) || a.name.localeCompare(b.name, undefined, { numeric: true }));
+  const sorted = [...scene.parts].sort((a, b) => order(a) - order(b) || String(a.name).localeCompare(String(b.name), undefined, { numeric: true }));
   let lastGroup = null;
   for (const p of sorted) {
     if (groups.length && p.group !== lastGroup) {
@@ -310,14 +326,26 @@ async function openLocal(source) {
     showBanner('STL 파일을 찾지 못했습니다.', true);
     return;
   }
-  const start = addModels(defs);
+  // a folder opened again (same name) replaces its model instead of adding a duplicate chip
+  let start = -1;
+  for (const def of defs) {
+    const i = scene.models.findIndex((m) => !m.key && m.name === def.name);
+    let k = i;
+    if (i >= 0) scene.replaceModel(i, def);
+    else k = addModels([def]);
+    if (start < 0) start = k;
+  }
   $('start').classList.add('gone');
   if (!camOn) enterMouseMode('');
   switchModel(start);
 }
 $('b-open').onclick = () => $('f-dir').click();
+const openFailed = (e) => {
+  console.error(e);
+  showBanner(`폴더를 읽지 못했습니다: ${e?.message || e}`);
+};
 $('f-dir').onchange = (e) => {
-  openLocal([...e.target.files]);
+  openLocal([...e.target.files]).catch(openFailed);
   e.target.value = '';
 };
 let dragDepth = 0;
@@ -334,7 +362,7 @@ addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   $('drop').classList.remove('show');
-  openLocal(e.dataTransfer);
+  openLocal(e.dataTransfer).catch(openFailed);
 });
 
 // models committed to the repo (Turret/, hailo/, ...)
@@ -366,7 +394,7 @@ maint = new Maint({
   dwellTime: () => dwellTime(),
 });
 // a clicked button outside the panel gives the keyboard back, so Enter / M / N never re-click it
-addEventListener('click', (e) => e.target.closest?.('#start button, #chips button, #toolbar button, #panel button, #dg-open')?.blur());
+addEventListener('click', (e) => e.target.closest?.('#start button, #chips button, #toolbar button, #panel button, #dg-open, #b-panel')?.blur());
 relayout();
 
 // for debugging in the browser console (dev server only)
@@ -375,7 +403,17 @@ let camOn = false;
 let lastVideoTime = -1;
 let perc = { hands: [] };
 
+let cameraStarting = false;
 async function startCamera() {
+  if (cameraStarting || camOn) return;
+  cameraStarting = true;
+  try {
+    await startCameraNow();
+  } finally {
+    cameraStarting = false;
+  }
+}
+async function startCameraNow() {
   $('start').classList.add('gone');
   setTracking('시작 중…', 'warn');
   if (!navigator.mediaDevices?.getUserMedia || !window.isSecureContext) {
@@ -387,17 +425,25 @@ async function startCamera() {
     video.srcObject = stream;
     await video.play();
     camOn = true;
+    // unplugged, privacy switch, another app took it: drop the hands it last saw, offer a restart
+    for (const tr of stream.getVideoTracks()) tr.addEventListener('ended', cameraLost);
     ui.feed = true;
     $('t-feed').classList.add('on');
     document.body.classList.add('feed');
   } catch (e) {
     console.warn(e);
-    enterMouseMode(e && e.name === 'NotAllowedError' ? '카메라 권한이 거부되었습니다. 주소창에서 허용한 뒤 새로고침하세요.' : '카메라를 찾지 못했습니다.');
+    const why = {
+      NotAllowedError: '카메라 권한이 거부되었습니다. 주소창에서 허용한 뒤 다시 시도하세요.',
+      NotReadableError: '카메라를 다른 앱이 쓰고 있습니다. 그 앱을 닫고 왼쪽 「손 인식」을 눌러 다시 시도하세요.',
+      AbortError: '카메라를 다른 앱이 쓰고 있습니다. 그 앱을 닫고 왼쪽 「손 인식」을 눌러 다시 시도하세요.',
+      SecurityError: '이 페이지에서는 카메라 사용이 막혀 있습니다.',
+    }[e?.name] || '카메라를 찾지 못했습니다.';
+    enterMouseMode(why);
     return;
   }
   setTracking('손 모델 로딩…', 'warn');
   try {
-    await tracker.init();
+    if (!tracker.ready) await tracker.init(); // a restart after the camera dropped keeps the loaded model
     setTracking('켜짐', 'ok');
     showBanner('');
   } catch (e) {
@@ -411,6 +457,21 @@ function enterMouseMode(msg) {
   setTracking('마우스만', 'warn');
   if (msg) showBanner(msg + ' 마우스 조작으로 전환합니다.', true);
 }
+function cameraLost() {
+  if (!camOn) return;
+  camOn = false;
+  perc = { hands: [] };
+  engine.reset();
+  ui.feed = false;
+  $('t-feed').classList.remove('on');
+  document.body.classList.remove('feed');
+  setTracking('카메라 끊김', 'warn');
+  showBanner('카메라 연결이 끊겼습니다. 왼쪽 「손 인식」을 눌러 다시 시작할 수 있습니다. 마우스 조작은 계속 됩니다.', true);
+}
+// the tracking status doubles as a (re)start button while the camera is off
+$('s-track').addEventListener('click', () => {
+  if (!camOn) startCamera();
+});
 
 function setTracking(text, cls) {
   const el = $('s-track');
@@ -480,7 +541,9 @@ function endGrab() {
 function control(t, dt) {
   const live = perc.hands.filter((h) => !h.held);
   $('s-hands').textContent = String(live.length);
-  for (const id of [...handSince.keys()]) if (!live.some((h) => h.id === id)) handSince.delete(id);
+  // a hand the engine holds through a missed tracking frame keeps its warm-up and its grab
+  for (const id of [...handSince.keys()]) if (!perc.hands.some((h) => h.id === id)) handSince.delete(id);
+  if (!live.length && perc.hands.length) return;
   const fresh = perc !== lastPerc; // a new tracking result arrived this frame
   lastPerc = perc;
   for (const h of live) {
@@ -652,7 +715,7 @@ let draggingMouse = false;
 let mouseStart = null;
 let mouseLast = null;
 let mousePart = null; // { i, mode: 'move' | 'spin' }
-const onUi = (e) => e.target.closest?.('#panel,#chips,#toolbar,#start,#diag,#dg-open,.mt-float');
+const onUi = (e) => e.target.closest?.('#panel,#chips,#toolbar,#start,#diag,#dg-open,.mt-float,#b-panel,#banner');
 
 addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || onUi(e)) return;
@@ -670,7 +733,7 @@ addEventListener('pointerdown', (e) => {
 });
 addEventListener('pointermove', (e) => {
   if (!draggingMouse) {
-    if (onUi(e) || perc.hands.length) return;
+    if (onUi(e) || perc.hands.some((h) => !h.held)) return;
     // maintenance: a defect badge / callout under the mouse wins over the part under it
     if (maint.hover(e.clientX, e.clientY)) scene.setHover(-1);
     else scene.setHover(scene.pick(e.clientX, e.clientY, 0));
@@ -686,6 +749,14 @@ addEventListener('pointermove', (e) => {
   }
   mouseLast = { x: e.clientX, y: e.clientY };
 });
+function pointerCancel() {
+  if (!draggingMouse) return;
+  draggingMouse = false;
+  scene.holdVel = false;
+  scene.grabbed = -1;
+  mousePart = null;
+}
+addEventListener('pointercancel', pointerCancel);
 addEventListener('pointerup', (e) => {
   if (!draggingMouse) return;
   draggingMouse = false;
@@ -705,18 +776,25 @@ addEventListener('pointerup', (e) => {
 addEventListener(
   'wheel',
   (e) => {
+    if (e.ctrlKey) e.preventDefault(); // a trackpad pinch: zoom the model, never the whole page
     if (onUi(e)) return;
-    scene.zoomBy(Math.exp(-e.deltaY * 0.0012));
+    scene.zoomBy(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0012)));
   },
-  { passive: true },
+  { passive: false },
 );
+const ARROWS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'];
 addEventListener('keydown', (e) => {
-  // typing in a form field never triggers shortcuts (range sliders keep their arrow keys)
+  // typing in a form field never triggers shortcuts; a focused range slider keeps only its arrow keys
   const tg = e.target;
   if (tg.isContentEditable || tg.tagName === 'TEXTAREA' || tg.tagName === 'SELECT') return;
-  if (tg.tagName === 'INPUT' && (tg.type !== 'range' || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight'))) return;
+  if (tg.tagName === 'INPUT' && (tg.type !== 'range' || ARROWS.includes(e.key))) return;
+  // browser / OS combos (Ctrl+C, Cmd+H, Ctrl+2) are not ours; holding a toggle key must not flicker it
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.repeat && !['ArrowLeft', 'ArrowRight', '[', ']'].includes(e.key)) return;
   if (maint.onKey(e)) return;
-  const k = e.key.toLowerCase();
+  // letter keys by position, so a Korean (or any non-Latin) layout works too
+  const k = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : e.key.toLowerCase();
+  const digit = /^Digit[1-9]$/.test(e.code) ? +e.code.slice(5) : e.key >= '1' && e.key <= '9' ? +e.key : 0;
   if (e.key === ' ') {
     e.preventDefault();
     scene.explodeTarget = scene.explodeTarget > 0.5 ? 0 : 1;
@@ -731,7 +809,7 @@ addEventListener('keydown', (e) => {
   else if (k === 'i' && scene.sel >= 0 && !maint.on) $('pc-iso').click();
   else if (k === 'h' && scene.sel >= 0 && !maint.on) setPartVisible(scene.sel, false); // maintenance keeps every part shown
   else if (k === 'escape') select(-1);
-  else if (e.key >= '1' && e.key <= '9' && +e.key <= scene.models.length) switchModel(+e.key - 1);
+  else if (digit && digit <= scene.models.length) switchModel(digit - 1);
 });
 
 // ------------------------------------------------------------------ overlay drawing
@@ -862,7 +940,8 @@ function drawLabels() {
   ctx.font = LABEL_FONT(true);
   const textW = (list) => Math.max(0, ...list.map((p) => ctx.measureText(p.name).width)) + 12;
   const colR = clamp(maxX + 80, panelR + 360, rightEdge - 16 - textW(right));
-  const colL = clamp(minX - 80, panelR + 16 + textW(left), rightEdge - 400);
+  const loL = panelR + 16 + textW(left), hiL = rightEdge - 400;
+  const colL = hiL < loL ? loL : clamp(minX - 80, loL, hiL); // narrow screen: stay right of the panel
   ctx.save();
   ctx.globalAlpha = hotOnly ? 1 : e;
   ctx.textBaseline = 'middle';
@@ -1184,15 +1263,33 @@ function drawOverlay() {
 
 // ------------------------------------------------------------------ main loop
 let lastT = performance.now() / 1000;
+let frameErr = false;
+let lastVideoAt = 0;
 function frame(now) {
+  requestAnimationFrame(frame); // first: an exception below must not stop the app
+  try {
+    step(now);
+  } catch (e) {
+    if (!frameErr) {
+      frameErr = true; // report once, keep running
+      console.error(e);
+      showBanner(`표시 중 오류가 났습니다: ${e?.message || e} — 새로고침하면 대부분 해결됩니다.`);
+    }
+  }
+}
+function step(now) {
   const t = now / 1000;
   const dt = Math.min(0.05, Math.max(0.001, t - lastT));
   lastT = t;
 
   if (camOn && tracker.ready && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
+    lastVideoAt = t;
     const hands = tracker.detect(video, now);
     perc = engine.update(hands, t, mapPoint, (video.videoWidth || 16) / (video.videoHeight || 9));
+  } else if (perc.hands.length && t - lastVideoAt > 0.5) {
+    perc = { hands: [] }; // the video stalled (camera stopped, tab throttled): no stale hands
+    engine.reset();
   }
   control(t, dt);
   maint.update(t, dt);
@@ -1204,6 +1301,5 @@ function frame(now) {
   scene.update(dt);
   drawBack(t);
   drawOverlay();
-  requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

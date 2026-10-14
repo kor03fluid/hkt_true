@@ -229,6 +229,12 @@ export class SquadLink {
       this._close();
       this._set('lost');
       this._retry(3000);
+    } else if (this.streamAt && this.status !== 'live' && now - this.streamAt > 10000) {
+      // the relay answered but no state ever came: treat it like a dead upstream and retry
+      this.streamAt = 0;
+      this.gen++;
+      this._close();
+      this._fail(true);
     }
   }
   _set(s) {
@@ -238,6 +244,7 @@ export class SquadLink {
     this.onStatus(s);
   }
   _close() {
+    this.streamAt = 0;
     clearTimeout(this.timer);
     clearInterval(this.poll);
     this.timer = this.poll = 0;
@@ -257,9 +264,13 @@ export class SquadLink {
     } catch {
       return;
     }
-    if (!snap || !Array.isArray(snap.soldiers)) return;
+    if (!snap || typeof snap !== 'object' || Array.isArray(snap)) return;
+    // any object is a state (an environment-only setup has no soldiers); lists keep only object entries
+    const list = (v) => arr(v).filter((x) => x && typeof x === 'object');
+    snap = { ...snap, soldiers: list(snap.soldiers), events: list(snap.events), telemetry: list(snap.telemetry) };
     this.snap = snap;
     this.lastAt = performance.now();
+    this.streamAt = 0;
     this._set('live');
     this.onState(snap);
   }
@@ -285,6 +296,7 @@ export class SquadLink {
       return;
     }
     if (!this.want || gen !== this.gen) return;
+    this.streamAt = performance.now(); // waiting for the first state (tick() gives up after 10 s)
     if (typeof EventSource === 'undefined') {
       const get = () => fetch(this.base + 'state', { cache: 'no-store' }).then((r) => r.text()).then((t) => gen === this.gen && this._take(t)).catch(() => {});
       get();

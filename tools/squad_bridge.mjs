@@ -50,7 +50,28 @@ for (const o of ['https://kor03fluid.github.io', ...list('SQUAD_ALLOW_ORIGINS'),
   }
 }
 const allowHosts = new Set([...list('SQUAD_ALLOW_HOSTS'), ...many('allow-host')].map((h) => h.toLowerCase()));
-const target = new URL(args.find((a) => !a.startsWith('--')) || process.env.SQUAD_URL || 'http://127.0.0.1:8080');
+const USAGE = 'usage: node tools/squad_bridge.mjs [http://<control-server>:8080] [--port 8095] [--host 127.0.0.1] [--file release/HoloHand-STL.html] [--allow-origin <origin>] [--allow-host <name>]';
+const unknown = args.filter((a) => a.startsWith('--'));
+if (unknown.length) {
+  console.error(`unknown option ${unknown.join(' ')}\n${USAGE}`);
+  process.exit(2);
+}
+let target;
+try {
+  const raw = args.find((a) => !a.startsWith('--')) || process.env.SQUAD_URL || 'http://127.0.0.1:8080';
+  target = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`); // '192.168.0.10:8080' means http
+} catch {
+  console.error(`not a control-server URL: ${args.find((a) => !a.startsWith('--'))}\n${USAGE}`);
+  process.exit(2);
+}
+if (target.protocol !== 'http:') {
+  console.error(`the control server (squad-link) speaks plain http; got ${target.protocol}//\n${USAGE}`);
+  process.exit(2);
+}
+if (!Number.isInteger(port) || port <= 0 || port >= 65536) {
+  console.error(`bad --port ${port}\n${USAGE}`);
+  process.exit(2);
+}
 const ROUTES = new Set(['config', 'state', 'stream']);
 /** Host header names this machine: localhost, an IP address (any port, e.g. through a port forward), or an allowed name. */
 function hostOk(h) {
@@ -129,6 +150,10 @@ const server = http.createServer(async (req, res) => {
   } catch (e) {
     send(res, 500, { error: String(e.message || e) });
   }
+});
+server.on('error', (e) => {
+  console.error(e.code === 'EADDRINUSE' ? `port ${port} is already in use (another bridge running?) — pick one with --port` : `bridge error: ${e.message || e}`);
+  process.exit(1);
 });
 server.listen(port, host, () => {
   const shown = host === '0.0.0.0' ? 'localhost' : host;

@@ -50,13 +50,41 @@ export function repoModels() {
 }
 
 function finish(name, parts, manifest) {
+  manifest = cleanManifest(manifest);
   return {
     name: manifest?.name || name,
     subtitle: manifest?.subtitle || `${name} 폴더의 STL 어셈블리`,
     up: (manifest?.up || 'z').toLowerCase(),
-    manifest: manifest || null,
+    manifest,
     parts,
   };
+}
+
+// a parts.json is hand-written: every text field becomes a string, groups a list of objects, the view
+// numbers, so one odd value cannot break the part list, the labels or the camera
+const text = (v) => (typeof v === 'string' ? v : v == null ? '' : Array.isArray(v) ? v.map(text).join('\n') : typeof v === 'object' ? '' : String(v));
+const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
+function cleanManifest(m) {
+  m = obj(m);
+  if (!m) return null;
+  const out = { ...m };
+  for (const k of ['name', 'subtitle', 'about', 'up']) if (k in out) out[k] = text(out[k]);
+  out.groups = Array.isArray(m.groups) ? m.groups.filter(obj).map((g) => ({ ...g, id: text(g.id), name: text(g.name) })) : [];
+  const view = obj(m.view);
+  if (view) {
+    out.view = {};
+    for (const k of ['x', 'y', 'z', 'zoom']) if (view[k] !== null && view[k] !== '' && Number.isFinite(+view[k])) out.view[k] = +view[k];
+  } else delete out.view;
+  const parts = obj(m.parts) || {};
+  out.parts = {};
+  for (const [file, info] of Object.entries(parts)) {
+    const q = obj(info);
+    if (!q) continue;
+    const c = { ...q };
+    for (const k of ['name', 'alt', 'group', 'desc', 'code']) if (k in c) c[k] = text(c[k]);
+    out.parts[file] = c;
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------ drag & drop / folder picker

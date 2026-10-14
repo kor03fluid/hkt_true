@@ -90,10 +90,13 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const round = (v) => Math.round(Number(v.toFixed(6)));
 const isHelmet = (code) => /^DH-/.test(code || '');
 // a SQUAD LINK signal row (live, or a live row exported and imported again): never an AI detection
-const isSignal = (d) => !!d && (d.source === 'live' || !!(TYPES[d.type] && TYPES[d.type].signal));
-const sevOf = (d) => (SEV_W[d && d.sev] ? d.sev : 'mid');
+// own keys only: an imported 'constructor' / 'toString' type or severity is unknown, not Object.prototype
+const own = (o, k) => k != null && Object.prototype.hasOwnProperty.call(o, k);
+const pick = (o, k, d) => (own(o, k) ? o[k] : d);
+const isSignal = (d) => !!d && (d.source === 'live' || !!pick(TYPES, d.type, null)?.signal);
+const sevOf = (d) => (own(SEV_W, d && d.sev) ? d.sev : 'mid');
 const stateOf = (d) => (d.fp || d.status === 'closed' ? 'closed' : d.status === 'repaired' ? 'repaired' : 'open');
-const typeKo = (d) => (TYPES[d.type] ? TYPES[d.type].ko : d.type || '결함');
+const typeKo = (d) => (own(TYPES, d.type) ? TYPES[d.type].ko : String(d.type || '결함'));
 const defLabel = (d) => `${d.part} ${typeKo(d)}(${SEVERITY[sevOf(d)].ko})`;
 
 /** Part entry of a model KB with defaults filled in (KB may be null or partial: never throws). */
@@ -152,7 +155,7 @@ export function runtimeDefect(raw, source = 'sample') {
 /** 0..100 */
 export function riskOf(defect, partKb) {
   const pk = normPart(partKb, defect && defect.part);
-  const typeW = TYPE_W[defect.type] != null ? TYPE_W[defect.type] : 0.5;
+  const typeW = pick(TYPE_W, defect.type, 0.5);
   const sizeF = clamp(0.75 + num(defect.size, 0) / 40, 0.75, 1.25);
   return clamp(round(100 * typeW * SEV_W[sevOf(defect)] * CRIT_W[pk.crit] * sizeF), 0, 100);
 }
@@ -382,7 +385,7 @@ export function repairPlan({ defect, parts = [], kb = null, modelKey = '', seq =
     if (drive) work.push('선회/고각 원점·캘리브레이션');
     if (code === 'HP-01L') work.push('설정·동작 모드 유지 확인');
   } else if (defect.type === 'impact' && pk.role !== 'electronics') work = WORK_IMPACT_STRUCTURE;
-  else work = WORK[defect.type] || WORK.dent;
+  else work = pick(WORK, defect.type, WORK.dent);
 
   const steps = [];
   const add = (kind, part, text) => steps.push({ id: 's' + (steps.length + 1), kind, part, text });
@@ -405,14 +408,14 @@ export function repairPlan({ defect, parts = [], kb = null, modelKey = '', seq =
   }
   add('record', code, `${monitor ? '관찰 등록' : '정비 결과 기록'} — 작업지시 ${wo} · 소요 시간·${signal ? '확인 결과' : '측정값'}·사용 부품 정비 이력 등록`);
 
-  const workMin = action === 'replace' ? pk.replace : action === 'repair' ? REPAIR_MIN[defect.type] || 25 : 5;
+  const workMin = action === 'replace' ? pk.replace : action === 'repair' ? pick(REPAIR_MIN, defect.type, 25) : 5;
   const minutes = 5 + access.reduce((s, c) => s + kbPart(kb, c).remove * 2, 0) + workMin + 10;
 
   const tools = monitor ? (signal ? [] : ['버니어 캘리퍼스']) : uniq([
     ...access.flatMap((c) => kbPart(kb, c).tools), ...pk.tools,
-    ...(action === 'repair' ? REPAIR_TOOLS[defect.type] || [] : ['버니어 캘리퍼스']), '토크 드라이버',
+    ...(action === 'repair' ? pick(REPAIR_TOOLS, defect.type, []) : ['버니어 캘리퍼스']), '토크 드라이버',
   ]);
-  const materials = monitor ? [] : uniq([...(action === 'repair' ? REPAIR_MATERIALS[defect.type] || [] : []), ...pk.materials]);
+  const materials = monitor ? [] : uniq([...(action === 'repair' ? pick(REPAIR_MATERIALS, defect.type, []) : []), ...pk.materials]);
 
   return {
     id: defect.id, part: code, wo, action, priority: a.priority, level: a.level, baseLevel: a.baseLevel, minutes,
