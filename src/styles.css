@@ -455,5 +455,6 @@ svg.mt-net.hov .e.hi { opacity: 1; }
 @media (max-width: 900px) {
   /* a bottom sheet above the chip bar: the model and the chips stay usable */
   #diag { left: 10px; right: 10px; width: auto; top: max(54px, calc(100vh - 630px)); bottom: 70px; height: auto; }
+  #diag .dg-foot { font-size: 10px; line-height: 1.35; max-height: 2.7em; overflow: hidden; } /* the 예시 데이터 tag stays in the head */
   #chips { z-index: 5; }
 }
