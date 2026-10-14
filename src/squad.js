@@ -33,6 +33,7 @@ export const RULES = {
 const SENSOR_KO = { imu: 'IMU(움직임)', heart_rate: '심박' };
 
 const arr = (v) => (Array.isArray(v) ? v : []);
+const own = (o, k) => k != null && Object.prototype.hasOwnProperty.call(o, k);
 const hhmm = (iso) => {
   const d = new Date(iso);
   if (!iso || Number.isNaN(d.getTime())) return '';
@@ -95,6 +96,11 @@ export function liveSignals(snap, map = DEFAULT_MAP, active = []) {
   }
   for (const e of arr(snap?.events)) {
     if (e?.event_type !== 'impact' || !e.event_id || !e.node_id) continue;
+    // closed by a maintenance report already (another viewer, or this one before its storage was cleared)
+    if (e.event_state === 'resolved' && e.resolved_by === 'maintenance') {
+      skip.push(`ev:${e.event_id}`);
+      continue;
+    }
     const t = hhmm(e.first_received_at);
     const sig = { key: `ev:${e.event_id}`, kind: 'impact', node: e.node_id, model: map[e.node_id], at: e.first_received_at || snap?.server_time || null, sim: sim(e.source), cond: false };
     sig.text = `${e.node_id} 충격 사건${t ? ` (${t})` : ''}${e.repeat_count > 1 ? ` ×${e.repeat_count}` : ''} — 충격은 관측일 뿐 손상 확정 아님`;
@@ -199,53 +205,73 @@ export const rowEvents = (r) => {
 };
 const STATUS = { GO: 'go', LIMITED: 'limited', NOGO: 'nogo' };
 
+const RANK = { GO: 0, LIMITED: 1, NOGO: 2 };
+
 /**
- * Maintenance report per mapped soldier node, for POST /api/maintenance (pure).
- *   rows: { [model]: rows, overrides applied }; map: node -> model; names: model -> display name
+ * Maintenance report per soldier node, for POST /api/maintenance (pure).
+ *   rows: { [model]: rows, overrides applied } of every equipment; map: node -> model; names: model -> name
  *   rate(model, rows) -> readiness { status: 'GO' | 'LIMITED' | 'NOGO', reasons } of the rule engine, or null
- *     (unknown equipment: no report). It gets only that node's live rows: sample, manual and imported rows
- *     belong to the equipment type, not to one soldier.
- * -> [{ node_id, status, equipment, reasons, items, resolved_event_ids }]
- *   items: the node's rows still to do (open, repaired awaiting inspection, under monitoring)
- *   resolved_event_ids: impact events of the node's closed rows that the server still lists as unresolved
+ *     (unknown equipment). It gets only that node's live rows: sample, manual and imported rows belong to the
+ *     equipment type, not to one soldier. Rows on any equipment count (a node remapped with work still open),
+ *     the worst one decides; rows from simulated data never count for real devices and the other way round.
+ * -> [{ node_id, status, equipment, reasons, items, resolved_event_ids, sig }] for every mapped node and every
+ *   node that still has live rows. items: rows still to do (open, repaired awaiting inspection, monitored).
+ *   resolved_event_ids: impact events behind the node's closed rows (their ids, or received within the row's
+ *   first..last span) that the server still lists as unresolved. sig: changes whenever the report or a row's
+ *   signal count changes (not sent).
  */
 export function maintReports({ snap, config, map = DEFAULT_MAP, rows = {}, names = {}, rate } = {}) {
   const out = [];
-  const events = new Map(arr(snap?.events).filter((e) => e && e.event_id).map((e) => [e.event_id, e]));
+  const sim = (snap?.source ?? 'simulation') === 'simulation';
+  const events = arr(snap?.events).filter((e) => e && e.event_id && e.event_type === 'impact' && e.event_state !== 'resolved');
   for (const node of nodesOf(snap, config).soldiers) {
-    const model = map[node];
-    if (!model) continue;
-    const mine = arr(rows[model]).filter((r) => r && r.source === 'live' && r.live?.node === node);
-    const rd = rate(model, mine);
-    if (!rd || !STATUS[rd.status]) continue;
-    const items = mine
-      .filter((r) => r.status !== 'closed')
-      .slice(0, 20)
-      .map((r) => ({
-        id: String(r.id).slice(0, 20),
-        kind: String(r.live.kind).slice(0, 20),
-        label: `${r.part} ${RULES[r.live.kind]?.ko || r.live.kind}`.slice(0, 80),
-        state: r.status === 'repaired' ? 'repaired' : r.monitored ? 'monitor' : 'open',
-      }));
+    const home = map[node] || '';
+    const byModel = Object.entries(rows)
+      .map(([model, list]) => [model, arr(list).filter((r) => r && r.source === 'live' && r.live?.node === node && !!r.live.sim === sim)])
+      .filter(([model, list]) => list.length || model === home);
+    if (!home && !byModel.length) continue;
+    if (home && !byModel.some(([m]) => m === home)) byModel.push([home, []]);
+    let worst = null;
+    for (const [model, list] of byModel) {
+      const rd = rate(model, list);
+      if (rd && own(RANK, rd.status) && (!worst || RANK[rd.status] > RANK[worst.status])) worst = rd;
+    }
+    if (!worst) continue;
+    const mine = byModel.flatMap(([, list]) => list);
+    const todo = mine.filter((r) => r.status !== 'closed');
+    const items = todo.slice(0, 20).map((r) => ({
+      id: String(r.id).slice(0, 20),
+      kind: String(r.live.kind).slice(0, 20),
+      label: `${r.part} ${RULES[r.live.kind]?.ko || r.live.kind}`.slice(0, 80),
+      state: r.status === 'repaired' ? 'repaired' : r.monitored ? 'monitor' : 'open',
+    }));
     const resolved = new Set();
     for (const r of mine) {
       if (r.status !== 'closed' || r.live.kind !== 'impact') continue;
-      for (const id of rowEvents(r)) {
-        const e = events.get(id);
-        if (e && e.node_id === node && e.event_type === 'impact' && e.event_state !== 'resolved') resolved.add(id);
+      const ids = new Set(rowEvents(r));
+      const { first, last } = r.live;
+      for (const e of events) {
+        if (e.node_id !== node) continue;
+        const t = e.first_received_at;
+        if (ids.has(e.event_id) || (typeof first === 'string' && typeof last === 'string' && t >= first && t <= last)) resolved.add(e.event_id);
       }
     }
+    const status = STATUS[worst.status];
+    const reasons = worst.status === 'GO' ? [] : arr(worst.reasons).slice(0, 4).map((t) => String(t).slice(0, 120));
+    const equipment = String(names[home] || names[byModel[0][0]] || home || byModel[0][0]).slice(0, 60);
     out.push({
-      node_id: node,
-      status: STATUS[rd.status],
-      equipment: String(names[model] || model).slice(0, 60),
-      reasons: rd.status === 'GO' ? [] : arr(rd.reasons).slice(0, 4).map((t) => String(t).slice(0, 120)),
-      items,
-      resolved_event_ids: [...resolved].slice(0, 50),
+      node_id: node, status, equipment, reasons, items, resolved_event_ids: [...resolved].slice(0, 50),
+      sig: JSON.stringify([status, equipment, reasons, items, todo.map((r) => r.live.count || 1)]),
     });
   }
   return out;
 }
+
+/** Send now? A changed report, a server without one (restart, demo reset) or impacts to close; not while one is in flight or backing off. */
+export const reportDue = (rep, { sent, server, busy, retryAt = 0, now }) => !busy && now >= retryAt && (sent !== rep.sig || !server || rep.resolved_event_ids.length > 0);
+
+/** Event ids of a row after one more event (rows made before ids were kept start from the id in their key). */
+export const withEvent = (r, id) => [...rowEvents(r), id].slice(-EVENTS_MAX);
 
 /**
  * Connection to the control server through the same-origin bridge path. status: 'off' (not started),

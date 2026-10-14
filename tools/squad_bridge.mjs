@@ -12,7 +12,7 @@
 // /squad/api/maintenance (JSON): the maintenance result, i.e. each soldier's equipment state and the impact
 // incidents whose inspection is done. Everything else is refused, so the viewer can never acknowledge or close
 // an SOS or a link incident, or inject device packets.
-// The squad data is not public: other web pages may read it only from an allowed origin (CORS echo, plus the
+// The squad data is not public: other web pages may read it (and send the maintenance report) only from an allowed origin (CORS echo, plus the
 // private-network preflight answer). Allowed by default: the hosted viewer https://kor03fluid.github.io; add
 // more with --allow-origin (or $SQUAD_ALLOW_ORIGINS, comma separated). A file:// copy sends Origin 'null', which
 // sandboxed frames of any site send too, so it is never allowed by default: open the bridge URL instead.
@@ -84,14 +84,16 @@ function hostOk(h) {
   return name === 'localhost' || /^\d{1,3}(\.\d{1,3}){3}$/.test(name) || /^\[[0-9a-f:.]+\]$/.test(name) || allowHosts.has(name);
 }
 const refused = new Set();
+/** The page this bridge serves (also behind an https tunnel); browsers send Origin on its POSTs too. */
+const ownOrigin = (req) => [`http://${req.headers.host}`, `https://${req.headers.host}`].includes(req.headers.origin);
 /** CORS headers for an allowed cross-origin caller, none otherwise (same-origin requests need none). */
 function cors(req) {
   const o = req.headers.origin;
-  if (!o) return {};
+  if (!o || ownOrigin(req)) return {};
   if (!allow.has(o)) {
     if (!refused.has(o)) {
       refused.add(o);
-      console.log(`  refused cross-origin read from ${o} — to allow it: --allow-origin ${o}`);
+      console.log(`  refused cross-origin request from ${o} — to allow it: --allow-origin ${o}`);
     }
     return {};
   }
@@ -142,8 +144,7 @@ function report(req, res) {
   const h = cors(req);
   const o = req.headers.origin;
   // a write needs a known page: this bridge's own origin or an allowed one (curl and other tools send none)
-  const own = [`http://${req.headers.host}`, `https://${req.headers.host}`]; // this bridge's page (also behind an https tunnel)
-  if (o && !own.includes(o) && !h['Access-Control-Allow-Origin']) return send(res, 403, { error: '허용되지 않은 페이지의 정비 보고입니다 (--allow-origin 으로 추가)' });
+  if (o && !ownOrigin(req) && !h['Access-Control-Allow-Origin']) return send(res, 403, { error: '허용되지 않은 페이지의 정비 보고입니다 (--allow-origin 으로 추가)' });
   if (!/^application\/json\s*(;|$)/i.test(req.headers['content-type'] || '')) return send(res, 415, { error: '정비 보고는 application/json 으로 보내야 합니다.' }, undefined, h);
   const chunks = [];
   let size = 0, tooBig = false;
@@ -198,7 +199,7 @@ server.on('error', (e) => {
 server.listen(port, host, () => {
   const shown = host === '0.0.0.0' ? 'localhost' : host;
   console.log(`SQUAD LINK bridge: http://${shown}:${port}/#maint  (viewer ${file.replace(ROOT + '/', '')} · relays ${target.origin}/api/{config,state,stream} + POST /api/maintenance)`);
-  console.log(`  other pages allowed to read it: ${[...allow].join(', ') || '(none)'}`);
+  console.log(`  other pages allowed to read it and send maintenance reports: ${[...allow].join(', ') || '(none)'}`);
   if (host === '0.0.0.0') console.log('  note: other devices reach it over plain http, where browsers turn the camera (hand tracking) off');
 });
 for (const sig of ['SIGINT', 'SIGTERM']) {

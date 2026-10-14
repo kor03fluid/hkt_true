@@ -173,11 +173,11 @@ node tools/squad_bridge.mjs http://<관제서버>:8080   # 한 파일 뷰어 + �
 
 **정비 결과 보고** (`POST /api/maintenance`, AI 정비 모드가 켜져 연결된 동안)
 
-- 병사 노드마다 그 병사에게서 온 실시간 항목만으로 장비 판정을 계산해 보냅니다. 예시·수동·불러온 결함은 장비 종류의 것이라 병사 상태에 넣지 않습니다. SQUAD LINK 분대원 목록에 **장비 운용 가능 / 제한 운용 / 운용 불가**와 남은 점검 항목이 뜹니다.
+- 병사 노드마다 그 병사에게서 온 실시간 항목만으로 장비 판정을 계산해 보냅니다. 예시·수동·불러온 결함은 장비 종류의 것이라 병사 상태에 넣지 않습니다. SQUAD LINK 분대원 목록에 **장비 운용 가능 / 제한 운용 / 운용 불가**가, 병사 상세에 남은 점검 항목이 뜹니다. 노드 연결을 바꿔도 이전 장비에 남은 그 병사의 항목은 계속 셉니다. 가상 데이터로 만든 항목은 실장비 병사에, 실장비 항목은 가상 병사에 넣지 않습니다.
 - 충격 항목을 **점검 완료** 또는 **이상 없음**으로 닫으면 그 충격 사건을 관제 서버에서 '정비 점검으로 종료' 처리하고, 병사 장비가 **운용 가능**으로 돌아갑니다. 센서 고장은 수리 후 **재검사 합격**까지 마쳐야 운용 가능입니다.
 - 상태가 바뀔 때, 다시 연결될 때, 관제 서버에 보고가 없을 때(재시작·시연 초기화) 보냅니다. 보고가 거부되거나 실패하면 연결 줄에 표시하고 다시 시도합니다. 노드별 보고 상태는 **연결 설정**에서 보입니다.
-- 관제 서버의 **무작위 이슈**(가상 모드, squad-link `simulation.random_issues`)를 켜 두면, 병사 장비가 운용 가능으로 보고된 뒤 1~3분 안에 다음 충격·센서 고장·송신 중단이 무작위로 생겨 점검 → 정비 → 운용 가능이 반복됩니다.
-- 중계 서버는 이 한 가지 쓰기(JSON)만 통과시키며, 이 화면 자신의 주소나 `--allow-origin` 으로 허용한 페이지에서 온 것만 받습니다.
+- 관제 서버의 **무작위 이슈**(가상 모드, squad-link `simulation.random_issues`)를 켜 두면, 병사 장비가 운용 가능으로 보고된 뒤 1~3분 안에 다음 충격·센서 고장·송신 중단이 무작위로 생겨 점검 → 정비 → 운용 가능이 반복됩니다(송신 중단은 복구되면 자동 종료되고 다음 대기 시간이 시작됨).
+- 중계 서버는 이 한 가지 쓰기(JSON)만 통과시키며, 이 화면 자신의 주소나 `--allow-origin` 으로 허용한 페이지(기본: GitHub Pages 화면)에서 온 것만 받습니다. 이전 버전 중계·관제 서버면 보고를 멈추고 연결 줄에 알립니다.
 
 ### 데이터 바꾸기
 
@@ -192,7 +192,7 @@ node tools/squad_bridge.mjs http://<관제서버>:8080   # 한 파일 뷰어 + �
 
 실제 AI 판독 결과도 같은 형식의 JSON으로 **불러오기** 하면 그대로 표시됩니다(위치가 표면에서 떨어져 있으면 가장 가까운 표면으로 붙이고 거리를 알려 줍니다). 화면을 클릭해 결함을 직접 **추가**할 수도 있습니다.
 
-검증: `node tools/test_diagnosis.mjs` (진단 규칙 · 지식베이스 · 예시 판정 · 실시간 연동 규칙), `python3 -I tools/place_defects.py --check` (결함 좌표), `python3 -I tools/place_defects.py --anchors --check` (실시간 점검 위치).
+검증: `node tools/test_diagnosis.mjs` (진단 규칙 · 지식베이스 · 예시 판정 · 실시간 연동 규칙 · 정비 보고), `node tools/test_bridge.mjs` (중계 서버 쓰기 규칙), `python3 -I tools/place_defects.py --check` (결함 좌표), `python3 -I tools/place_defects.py --anchors --check` (실시간 점검 위치).
 
 ## 마우스 · 키보드
 
@@ -216,6 +216,7 @@ tools/explode.json       부품별 분해 이동량 (mm)
 tools/parts_info.json    부품 이름 · 계열 · 설명
 tools/place_defects.py   예시 결함을 표면에 정확히 배치·검증 (tools/defects_spec.json → web/defects.json)
 tools/test_diagnosis.mjs 진단 규칙 · 지식베이스 · 예시 판정 · 실시간 연동 테스트
+tools/test_bridge.mjs    중계 서버 쓰기 규칙 테스트 (출처 · JSON · 크기 · 허용 경로)
 tools/squad_bridge.mjs   SQUAD LINK 중계 (읽기 + 정비 보고) + 한 파일 뷰어 제공 (http://localhost:8095/#maint)
 web/live_anchors.json    실시간 신호 점검 위치 (tools/live_anchors_spec.json → place_defects.py --anchors)
 web/defects.json         예시 결함 (STL 좌표)

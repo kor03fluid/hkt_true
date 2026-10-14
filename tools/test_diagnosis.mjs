@@ -7,7 +7,7 @@ import {
   TYPES, SEVERITY, riskOf, assess, diagnose, repairPlan, applyFeedback, reinspect, accessOrder, workOrder,
   runtimeDefect,
 } from '../src/diagnosis.js';
-import { liveSignals, reconcile, nodesOf, maintReports, rowEvents, EVENTS_MAX, DEFAULT_MAP, RULES } from '../src/squad.js';
+import { liveSignals, reconcile, nodesOf, maintReports, reportDue, withEvent, rowEvents, EVENTS_MAX, DEFAULT_MAP, RULES } from '../src/squad.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const readJson = (p) => JSON.parse(fs.readFileSync(path.join(root, p), 'utf8'));
@@ -556,6 +556,22 @@ console.log('SQUAD LINK');
   eq(maintReports({ snap: sM3, map: DEFAULT_MAP, rows: mrows([{ ...impDone.defect, id: 'S1' }], []), names, rate })[1].resolved_event_ids, [], 'an event of another soldier is never closed');
   eq(maintReports({ snap: sM, map: { halo_01: '', halo_02: 'hailo-Legacy' }, rows: mrows([], []), names, rate }).map((x) => x.node_id), ['halo_02'], 'unmapped soldier: no report');
   eq(maintReports({ snap: sM, map: DEFAULT_MAP, rows: mrows([], []), names, rate: () => null }).length, 0, 'unknown equipment: no report');
+  // review fixes: remap, simulated vs real data, spans, maintenance-closed impacts, send rule, legacy rows
+  const openOnModern = mrows([], [{ ...flt, id: 'S3' }]);
+  eq(maintReports({ snap: sM, map: { halo_01: 'hailo-Legacy', halo_02: 'hailo-Legacy' }, rows: openOnModern, names, rate }).map((x) => `${x.node_id}:${x.status}:${x.items.length}`), ['halo_01:limited:1', 'halo_02:go:0'], 'remapped node keeps its open work on the old equipment');
+  eq(maintReports({ snap: sM, map: { halo_01: '', halo_02: 'hailo-Legacy' }, rows: openOnModern, names, rate })[0].status, 'limited', 'unmapped node with open work is still reported');
+  eq(maintReports({ snap: { ...sM, source: 'device' }, map: DEFAULT_MAP, rows: openOnModern, names, rate })[0].items.length, 0, 'simulated rows never count for a real device');
+  const spanRow = { ...impDone.defect, id: 'S1', live: { ...impDone.defect.live, events: ['x'], first: '2026-10-13T04:00:00.000Z', last: '2026-10-13T05:00:00.000Z' } };
+  const sSpan = snap(sM.soldiers, [{ ...ev('old-1', 'halo_02', 'impact'), first_received_at: '2026-10-13T04:30:00.000Z' }, { ...ev('later', 'halo_02', 'impact'), first_received_at: '2026-10-13T06:00:00.000Z' }]);
+  eq(maintReports({ snap: sSpan, map: DEFAULT_MAP, rows: mrows([spanRow], []), names, rate })[1].resolved_event_ids, ['old-1'], 'events beyond the kept ids but within the row span are closed too, later ones are not');
+  const closedByMaint = snap(sM.soldiers, [{ ...ev('done-1', 'halo_02', 'impact', 'resolved'), resolved_by: 'maintenance' }]);
+  const Lm = liveSignals(closedByMaint, DEFAULT_MAP, []);
+  ok(!Lm.signals.length && Lm.skip.includes('ev:done-1'), 'an impact closed by maintenance never comes back as a row');
+  const one = MR1[1];
+  eq([reportDue(one, { sent: undefined, server: {}, now: 0 }), reportDue(one, { sent: one.sig, server: {}, now: 0 }), reportDue(one, { sent: one.sig, server: null, now: 0 }), reportDue(one, { sent: 'x', server: {}, busy: true, now: 0 }), reportDue(one, { sent: 'x', server: {}, retryAt: 5, now: 1 })], [true, false, true, false, false], 'send rule: changed / unchanged / server lost it / in flight / backing off');
+  const bumped = maintReports({ snap: sM, map: DEFAULT_MAP, rows: mrows([{ ...imp, id: 'S1', live: { ...imp.live, count: 2 } }, { ...lnk, id: 'S2' }], [{ ...flt, id: 'S3' }]), names, rate })[1];
+  ok(bumped.sig !== one.sig && reportDue(bumped, { sent: one.sig, server: {}, now: 0 }), 'a repeat on an open row sends the report again');
+  eq(withEvent({ live: { key: 'ev:A' } }, 'B'), ['A', 'B'], 'a row from before ids were kept keeps its first event on a repeat');
 }
 
 // --- summary ---------------------------------------------------------------------------------

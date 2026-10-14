@@ -11,9 +11,13 @@ const squad = process.env.SQUAD_URL
         target: process.env.SQUAD_URL,
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/squad/, ''),
-        // GET config / state / stream and POST maintenance only: anything else gets a 404 instead of the server
+        // GET config / state / stream, and POST maintenance from this page only (Vite's CORS default would let
+        // other localhost pages post): anything else gets a 404 instead of the server
         bypass: (req) =>
-          (req.method === 'GET' && /^\/squad\/api\/(config|state|stream)(\?|$)/.test(req.url)) || (req.method === 'POST' && /^\/squad\/api\/maintenance(\?|$)/.test(req.url)) ? undefined : false,
+          (req.method === 'GET' && /^\/squad\/api\/(config|state|stream)(\?|$)/.test(req.url)) ||
+          (req.method === 'POST' && /^\/squad\/api\/maintenance(\?|$)/.test(req.url) && (!req.headers.origin || req.headers.origin === `http://${req.headers.host}`))
+            ? undefined
+            : false,
       },
     }
   : undefined;
