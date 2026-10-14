@@ -7,7 +7,7 @@ import {
   TYPES, SEVERITY, riskOf, assess, diagnose, repairPlan, applyFeedback, reinspect, accessOrder, workOrder,
   runtimeDefect,
 } from '../src/diagnosis.js';
-import { liveSignals, reconcile, nodesOf, DEFAULT_MAP, RULES } from '../src/squad.js';
+import { liveSignals, reconcile, nodesOf, maintReports, rowEvents, EVENTS_MAX, DEFAULT_MAP, RULES } from '../src/squad.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const readJson = (p) => JSON.parse(fs.readFileSync(path.join(root, p), 'utf8'));
@@ -534,6 +534,28 @@ console.log('SQUAD LINK');
   eq(impDone.defect.closedBy, 'inspection', 'impact inspection close is marked as such');
   eq(applyFeedback({ ...impDone.defect, status: 'open' }, { result: 'monitor' }, { modelKey: 'hailo-Legacy', seq: 2, kb: KB['hailo-Legacy'] }).defect.closedBy, null, 'any other result clears closedBy');
   eq([pl.verify.length, pi.verify[0]], [0, '점검 부위 이상 여부 재확인 (발견한 손상은 별도 결함으로 등록)'], 'signal watch plan: no functional checks; signal job: no measurement wording');
+  // maintenance report (the only thing sent back): event ids on rows, each soldier's equipment state
+  eq(R1.add.find((x) => x.sig.kind === 'impact').row.live.events, ['halo_02:b:impact:1'], 'an impact row keeps its event id');
+  eq(R1.add.find((x) => x.sig.kind === 'link').row.live.events, undefined, 'a condition row has no event ids');
+  eq([B1.add[0].row.live.events.length, B1.add[0].row.live.events.at(-1)], [EVENTS_MAX, 'halo_01:b:impact:350'], 'event ids on one row are capped, newest kept');
+  eq([rowEvents({ live: { key: 'ev:a' } }), rowEvents({ live: { key: 'cond:fault:halo_01' } })], [['a'], []], 'a row from before ids were kept still names its first event');
+  const rate = (model, list) => run(model, list).readiness;
+  const names = { 'hailo-Legacy': 'hailo Legacy', 'hailo-Modern': 'hailo Modern' };
+  const sM = snap([soldier('halo_01', 'connected'), soldier('halo_02', 'connected')], [ev('halo_02:b:impact:1', 'halo_02', 'impact')]);
+  const mrows = (legacy, modern) => ({ 'hailo-Legacy': [...sample('hailo-Legacy'), ...legacy], 'hailo-Modern': [...sample('hailo-Modern'), ...modern] });
+  const MR1 = maintReports({ snap: sM, map: DEFAULT_MAP, rows: mrows([{ ...imp, id: 'S1' }, { ...lnk, id: 'S2' }], [{ ...flt, id: 'S3' }]), names, rate });
+  eq(MR1.map((x) => `${x.node_id}:${x.status}:${x.items.map((i) => `${i.id}/${i.kind}/${i.state}`).join(',')}`), ['halo_01:limited:S3/fault/open', 'halo_02:limited:S1/impact/open,S2/link/open'], 'per soldier: its live rows only, open items listed');
+  ok(MR1[1].equipment === 'hailo Legacy' && MR1[1].reasons.length > 0 && MR1[1].items[0].label === 'HP-01L 충격 감지', 'report names the equipment, the reasons and the items');
+  eq(maintReports({ snap: sM, map: DEFAULT_MAP, rows: mrows([], []), names, rate }).map((x) => x.status), ['go', 'go'], 'sample rows (equipment type, not a soldier) never limit a soldier');
+  const MR2 = maintReports({ snap: sM, map: DEFAULT_MAP, rows: mrows([{ ...impDone.defect, id: 'S1' }, { ...lnk, id: 'S2', status: 'closed', fp: true }], [{ ...flt, id: 'S3', status: 'repaired' }]), names, rate });
+  eq([MR2[1].status, MR2[1].items.length, MR2[1].resolved_event_ids, MR2[1].reasons], ['go', 0, ['halo_02:b:impact:1'], []], 'impact inspected: back in service, its incident to be closed on the server');
+  eq(MR2[0].items.map((i) => i.state), ['repaired'], 'a repaired sensor waits for inspection');
+  const sM2 = snap(sM.soldiers, [ev('halo_02:b:impact:1', 'halo_02', 'impact', 'resolved'), ev('halo_02:b:sos:1', 'halo_02', 'sos')]);
+  eq(maintReports({ snap: sM2, map: DEFAULT_MAP, rows: mrows([{ ...impDone.defect, id: 'S1', live: { ...impDone.defect.live, events: ['halo_02:b:impact:1', 'halo_02:b:sos:1'] } }], []), names, rate })[1].resolved_event_ids, [], 'closed on the server already, or not an impact: never sent');
+  const sM3 = snap(sM.soldiers, [ev('halo_02:b:impact:1', 'halo_01', 'impact')]);
+  eq(maintReports({ snap: sM3, map: DEFAULT_MAP, rows: mrows([{ ...impDone.defect, id: 'S1' }], []), names, rate })[1].resolved_event_ids, [], 'an event of another soldier is never closed');
+  eq(maintReports({ snap: sM, map: { halo_01: '', halo_02: 'hailo-Legacy' }, rows: mrows([], []), names, rate }).map((x) => x.node_id), ['halo_02'], 'unmapped soldier: no report');
+  eq(maintReports({ snap: sM, map: DEFAULT_MAP, rows: mrows([], []), names, rate: () => null }).length, 0, 'unknown equipment: no report');
 }
 
 // --- summary ---------------------------------------------------------------------------------

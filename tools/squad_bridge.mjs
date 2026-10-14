@@ -1,15 +1,17 @@
 #!/usr/bin/env node
-// SQUAD LINK -> AI 정비 bridge: serves the single-file viewer and relays the control server's read-only API
-// under the same origin, so the viewer can follow it live (the control server sends no CORS headers, and a
-// https page such as GitHub Pages may not read a plain-http LAN server).
+// SQUAD LINK <-> AI 정비 bridge: serves the single-file viewer and relays the control server's API under the
+// same origin, so the viewer can follow it live (the control server sends no CORS headers, and a https page
+// such as GitHub Pages may not read a plain-http LAN server).
 //
 //   node tools/squad_bridge.mjs [control-server-url] [--port 8095] [--host 127.0.0.1] [--file release/HoloHand-STL.html]
 //                               [--allow-origin <origin>]... [--allow-host <name>]...
 //   control-server-url defaults to $SQUAD_URL, else http://127.0.0.1:8080 (squad-link: node squad-link/server.mjs)
 //   then open http://localhost:8095/#maint
 //
-// Read-only and one-way: only GET /squad/api/config, /squad/api/state and /squad/api/stream (SSE) are relayed;
-// every other method is refused, so nothing in the viewer can acknowledge, resolve or inject anything.
+// Relayed: GET /squad/api/config, /squad/api/state, /squad/api/stream (SSE), and one write, POST
+// /squad/api/maintenance (JSON): the maintenance result, i.e. each soldier's equipment state and the impact
+// incidents whose inspection is done. Everything else is refused, so the viewer can never acknowledge or close
+// an SOS or a link incident, or inject device packets.
 // The squad data is not public: other web pages may read it only from an allowed origin (CORS echo, plus the
 // private-network preflight answer). Allowed by default: the hosted viewer https://kor03fluid.github.io; add
 // more with --allow-origin (or $SQUAD_ALLOW_ORIGINS, comma separated). A file:// copy sends Origin 'null', which
@@ -73,6 +75,7 @@ if (!Number.isInteger(port) || port <= 0 || port >= 65536) {
   process.exit(2);
 }
 const ROUTES = new Set(['config', 'state', 'stream']);
+const MAX_REPORT = 32 * 1024; // bytes of one maintenance report
 /** Host header names this machine: localhost, an IP address (any port, e.g. through a port forward), or an allowed name. */
 function hostOk(h) {
   const m = /^(\[[0-9a-f:.]+\]|[^:]+)(?::\d+)?$/i.exec(String(h || '').trim());
@@ -95,8 +98,8 @@ function cors(req) {
   return {
     'Access-Control-Allow-Origin': o,
     Vary: 'Origin',
-    'Access-Control-Allow-Methods': 'GET',
-    'Access-Control-Allow-Headers': 'Cache-Control, Last-Event-ID',
+    'Access-Control-Allow-Methods': 'GET, POST',
+    'Access-Control-Allow-Headers': 'Cache-Control, Last-Event-ID, Content-Type',
     'Access-Control-Allow-Private-Network': 'true',
   };
 }
@@ -134,6 +137,42 @@ function relay(req, res, route) {
   res.on('close', () => up.destroy()); // the viewer left: drop the upstream stream too
 }
 
+/** POST /squad/api/maintenance: JSON from this page or an allowed origin, relayed as is. */
+function report(req, res) {
+  const h = cors(req);
+  const o = req.headers.origin;
+  // a write needs a known page: this bridge's own origin or an allowed one (curl and other tools send none)
+  const own = [`http://${req.headers.host}`, `https://${req.headers.host}`]; // this bridge's page (also behind an https tunnel)
+  if (o && !own.includes(o) && !h['Access-Control-Allow-Origin']) return send(res, 403, { error: '허용되지 않은 페이지의 정비 보고입니다 (--allow-origin 으로 추가)' });
+  if (!/^application\/json\s*(;|$)/i.test(req.headers['content-type'] || '')) return send(res, 415, { error: '정비 보고는 application/json 으로 보내야 합니다.' }, undefined, h);
+  const chunks = [];
+  let size = 0, tooBig = false;
+  req.on('data', (c) => {
+    if (tooBig) return;
+    size += c.length;
+    if (size <= MAX_REPORT) return void chunks.push(c);
+    tooBig = true;
+    res.once('finish', () => req.destroy()); // answer first, then stop reading
+    send(res, 413, { error: '정비 보고가 너무 큽니다.' }, undefined, { ...h, Connection: 'close' });
+  });
+  req.on('error', () => res.destroy());
+  req.on('end', () => {
+    if (tooBig || res.headersSent) return;
+    const body = Buffer.concat(chunks);
+    const up = http.request(new URL('/api/maintenance', target), { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': body.length } }, (r) => {
+      res.writeHead(r.statusCode || 502, { ...h, 'Cache-Control': 'no-store', 'Content-Type': r.headers['content-type'] || 'application/json; charset=utf-8' });
+      r.pipe(res);
+      r.on('error', () => res.destroy());
+    });
+    up.setTimeout(4000, () => up.destroy(new Error('timeout')));
+    up.on('error', (e) => {
+      if (res.headersSent) res.destroy();
+      else send(res, 502, { error: `SQUAD LINK 서버에 연결할 수 없습니다 (${target.origin}): ${e.message}` }, undefined, h);
+    });
+    up.end(body);
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     if (!hostOk(req.headers.host)) return send(res, 421, { error: 'Host 헤더가 이 중계 서버가 아닙니다 (--allow-host 로 추가)' });
@@ -143,7 +182,8 @@ const server = http.createServer(async (req, res) => {
       const h = cors(req);
       return send(res, h['Access-Control-Allow-Origin'] ? 204 : 403, '', 'text/plain', h);
     }
-    if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: '읽기 전용 중계입니다 (GET만 허용)' }, undefined, { Allow: 'GET' });
+    if (req.method === 'POST' && m && m[1] === 'maintenance') return report(req, res);
+    if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: '읽기와 정비 보고만 중계합니다' }, undefined, { Allow: 'GET' });
     if (m && ROUTES.has(m[1])) return relay(req, res, m[1]);
     if (path === '/' || path === '/index.html') return send(res, 200, await viewer(), 'text/html; charset=utf-8');
     send(res, 404, { error: '없는 경로입니다.' });
@@ -157,7 +197,7 @@ server.on('error', (e) => {
 });
 server.listen(port, host, () => {
   const shown = host === '0.0.0.0' ? 'localhost' : host;
-  console.log(`SQUAD LINK bridge: http://${shown}:${port}/#maint  (viewer ${file.replace(ROOT + '/', '')} · relays ${target.origin}/api/{config,state,stream}, read-only)`);
+  console.log(`SQUAD LINK bridge: http://${shown}:${port}/#maint  (viewer ${file.replace(ROOT + '/', '')} · relays ${target.origin}/api/{config,state,stream} + POST /api/maintenance)`);
   console.log(`  other pages allowed to read it: ${[...allow].join(', ') || '(none)'}`);
   if (host === '0.0.0.0') console.log('  note: other devices reach it over plain http, where browsers turn the camera (hand tracking) off');
 });

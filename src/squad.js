@@ -1,19 +1,22 @@
-// SQUAD LINK live link: one-way, read-only feed from the team's control server (CLIKA_1 squad-link) into the
-// AI 정비 mode. The control server has no CORS headers and speaks plain http on the LAN, so the viewer
-// reads it through a same-origin path: tools/squad_bridge.mjs (serves the single-file viewer and proxies
-// GET /squad/api/{config,state,stream}) or the Vite dev proxy (SQUAD_URL). Nothing is ever posted back.
+// SQUAD LINK live link: follows the team's control server (CLIKA_1 squad-link) in the AI 정비 mode. The control
+// server has no CORS headers and speaks plain http on the LAN, so the viewer reaches it through a same-origin
+// path: tools/squad_bridge.mjs (serves the single-file viewer, relays GET /squad/api/{config,state,stream} and
+// POST /squad/api/maintenance) or the Vite dev proxy (SQUAD_URL).
 //
 // liveSignals() turns a /api/state snapshot into field signals (impact event, sensor failure, link lost,
 // installation shock, heat exposure); reconcile() turns signals into inspection rows for the maintenance
 // network. Both are pure (no DOM) so tools/test_diagnosis.mjs runs them. A signal says where to look, it
 // never confirms damage (data spec: "impact는 충격 관측이며 부상을 확정하지 않는다"; a lost link does not
 // tell power off from radio loss), so every row is an inspection item that a technician closes.
+// The only thing sent back is the maintenance result: maintReports() gives each mapped soldier's equipment
+// state (운용 가능 / 제한 운용 / 운용 불가 from those rows) and the impact incidents whose inspection is done.
 
 /** Default node -> equipment (model key) mapping; the viewer keeps the user's choice in localStorage. */
 export const DEFAULT_MAP = { halo_01: 'hailo-Modern', halo_02: 'hailo-Legacy', env_01: 'Turret' };
 export const HEAT_ON = 35; // °C, the data spec's heat_exposure threshold (생성 35 / 해제 34)
 export const HEAT_OFF = 34;
 const SEEN_MAX = 300;
+export const EVENTS_MAX = 50; // control-server event ids kept on one row (its repeats), for closing them after inspection
 
 /**
  * Signal kind -> inspection row. node: which node class raises it; type/sev feed the rule engine
@@ -152,6 +155,7 @@ export function reconcile({ signals = [], restored = [], held = [], skip = [], s
       // several events in one snapshot (it lists the newest first): keep the time span and the newest cause
       const row = pending.get(pk), live = row.live, t = sig.at || at;
       live.count++;
+      if (key.startsWith('ev:')) live.events = [...arr(live.events), key.slice(3)].slice(-EVENTS_MAX);
       if (t < live.first) live.first = t;
       if (t >= live.last) {
         live.last = t;
@@ -162,7 +166,7 @@ export function reconcile({ signals = [], restored = [], held = [], skip = [], s
         part: anchor.part, type: rule.type, sev: rule.sev, p: anchor.p, n: anchor.n, t: anchor.t, size: anchor.size || 6,
         conf: null, confirm: rule.confirm, found: String(sig.at || at).slice(0, 10), added: at, cause: sig.text,
         source: 'live', status: 'open', escalated: 0, wait: null, rework: 0, condemned: false, fp: false,
-        live: { kind: sig.kind, node: sig.node, sim: !!sig.sim, key, count: 1, first: sig.at || at, last: sig.at || at },
+        live: { kind: sig.kind, node: sig.node, sim: !!sig.sim, key, count: 1, first: sig.at || at, last: sig.at || at, ...(key.startsWith('ev:') ? { events: [key.slice(3)] } : {}) },
       };
       pending.set(pk, row);
       add.push({ model: sig.model, row, sig });
@@ -185,6 +189,62 @@ export function reconcile({ signals = [], restored = [], held = [], skip = [], s
   const old = [...next].filter((k) => !current.has(k));
   const drop = new Set(old.slice(0, Math.max(0, old.length - SEEN_MAX)));
   return { seen: [...next].filter((k) => !drop.has(k)), add, bump, clear };
+}
+
+/** Control-server event ids behind a row (rows made before ids were kept have only the first, in the key). */
+export const rowEvents = (r) => {
+  const ids = arr(r?.live?.events).filter((x) => typeof x === 'string');
+  if (!ids.length && typeof r?.live?.key === 'string' && r.live.key.startsWith('ev:')) ids.push(r.live.key.slice(3));
+  return ids;
+};
+const STATUS = { GO: 'go', LIMITED: 'limited', NOGO: 'nogo' };
+
+/**
+ * Maintenance report per mapped soldier node, for POST /api/maintenance (pure).
+ *   rows: { [model]: rows, overrides applied }; map: node -> model; names: model -> display name
+ *   rate(model, rows) -> readiness { status: 'GO' | 'LIMITED' | 'NOGO', reasons } of the rule engine, or null
+ *     (unknown equipment: no report). It gets only that node's live rows: sample, manual and imported rows
+ *     belong to the equipment type, not to one soldier.
+ * -> [{ node_id, status, equipment, reasons, items, resolved_event_ids }]
+ *   items: the node's rows still to do (open, repaired awaiting inspection, under monitoring)
+ *   resolved_event_ids: impact events of the node's closed rows that the server still lists as unresolved
+ */
+export function maintReports({ snap, config, map = DEFAULT_MAP, rows = {}, names = {}, rate } = {}) {
+  const out = [];
+  const events = new Map(arr(snap?.events).filter((e) => e && e.event_id).map((e) => [e.event_id, e]));
+  for (const node of nodesOf(snap, config).soldiers) {
+    const model = map[node];
+    if (!model) continue;
+    const mine = arr(rows[model]).filter((r) => r && r.source === 'live' && r.live?.node === node);
+    const rd = rate(model, mine);
+    if (!rd || !STATUS[rd.status]) continue;
+    const items = mine
+      .filter((r) => r.status !== 'closed')
+      .slice(0, 20)
+      .map((r) => ({
+        id: String(r.id).slice(0, 20),
+        kind: String(r.live.kind).slice(0, 20),
+        label: `${r.part} ${RULES[r.live.kind]?.ko || r.live.kind}`.slice(0, 80),
+        state: r.status === 'repaired' ? 'repaired' : r.monitored ? 'monitor' : 'open',
+      }));
+    const resolved = new Set();
+    for (const r of mine) {
+      if (r.status !== 'closed' || r.live.kind !== 'impact') continue;
+      for (const id of rowEvents(r)) {
+        const e = events.get(id);
+        if (e && e.node_id === node && e.event_type === 'impact' && e.event_state !== 'resolved') resolved.add(id);
+      }
+    }
+    out.push({
+      node_id: node,
+      status: STATUS[rd.status],
+      equipment: String(names[model] || model).slice(0, 60),
+      reasons: rd.status === 'GO' ? [] : arr(rd.reasons).slice(0, 4).map((t) => String(t).slice(0, 120)),
+      items,
+      resolved_event_ids: [...resolved].slice(0, 50),
+    });
+  }
+  return out;
 }
 
 /**
@@ -221,6 +281,17 @@ export class SquadLink {
     this._close();
     this.snap = null;
     this._set('off');
+  }
+  /** POST JSON through the same path (the maintenance report) -> { ok, status, data }; rejects on a network error. */
+  async post(path, body) {
+    const r = await fetch(this.base + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), cache: 'no-store' });
+    let data = null;
+    try {
+      data = await r.json();
+    } catch {
+      /* not JSON (an old bridge's plain error) */
+    }
+    return { ok: r.ok, status: r.status, data };
   }
   /** Per frame: a stream that went quiet (the server sends a state every second) counts as lost. */
   tick(now = performance.now()) {

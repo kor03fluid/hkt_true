@@ -8,7 +8,8 @@
 // cta, release, noteInput, update, draw, hud); the 3D side is scene.js (setMaint, setDefects, focusDefect...).
 // Sample defects, confidences and the knowledge base are demonstration data and are labelled as such.
 // SQUAD LINK (squad.js) adds live inspection rows (source 'live') from the team's control server when a
-// bridge serves the read-only API next to the page; a signal says where to look and never closes a defect.
+// bridge serves its API next to the page; a signal says where to look and never closes a defect. Back to the
+// server goes only the maintenance result: each soldier's equipment state and the impact incidents inspected.
 import SAMPLE from '/web/defects.json';
 import KB from '/web/maintenance.json';
 import ANCHORS from '/web/live_anchors.json';
@@ -17,7 +18,7 @@ import {
   diagnose, repairPlan, applyFeedback, reinspect, assess, actionKo,
 } from './diagnosis.js';
 import { clamp } from './utils.js';
-import { SquadLink, liveSignals, reconcile, nodesOf, DEFAULT_MAP, RULES } from './squad.js';
+import { SquadLink, liveSignals, reconcile, nodesOf, maintReports, DEFAULT_MAP, RULES, EVENTS_MAX } from './squad.js';
 
 const STORE = 'holohand-maint-v1';
 const STORE_BY = 'holohand-maint-by';
@@ -154,7 +155,12 @@ export class Maint {
   constructor(opts) {
     this.scene = opts.scene;
     this.ui = opts.ui;
-    this.toast = opts.toast || (() => {});
+    const toast = opts.toast || (() => {});
+    this.toast = (msg, ms) => {
+      this.toastAt = performance.now();
+      toast(msg, ms);
+    };
+    this.toastAt = -1e9;
     this.select = opts.select || (() => {});
     this.showPart = opts.showPart || (() => {});
     this.switchModel = opts.switchModel || (() => {});
@@ -221,6 +227,8 @@ export class Maint {
     this.squad = this._loadSquad();
     this.liveTry = [];
     this.liveMapOpen = false;
+    // maintenance reports to the control server: last sent content / status per node, in flight, retry time
+    this.mrep = { sent: {}, status: {}, busy: {}, retryAt: {}, off: false, err: '' };
     this.link = new SquadLink({ onState: (snap) => this._onSquad(snap), onStatus: (st) => this._onLinkStatus(st) });
     this._dom();
     this.scene.onReveal = (id) => this._onReveal(id);
@@ -874,9 +882,10 @@ export class Maint {
     st.seq++;
     this._save();
     this._recompute();
+    this._maintPush();
   }
 
-  // ------------------------------------------------------------------ SQUAD LINK (live link, read-only)
+  // ------------------------------------------------------------------ SQUAD LINK (live link + maintenance report)
   _loadSquad() {
     let v = null;
     try {
@@ -925,6 +934,8 @@ export class Maint {
       return;
     }
     if (st === 'live') this.liveBase = this.link.base;
+    // a new connection (or a server that came back) gets every soldier's state again
+    if (st === 'live' && this.liveWas !== 'live') this.mrep = { sent: {}, status: {}, busy: {}, retryAt: {}, off: false, err: '' };
     if (st === 'lost') this.toast('SQUAD LINK 연결 끊김 — 재연결 중', 2600);
     else if (st === 'upstream' && this.liveWas !== 'upstream') this.toast('중계 서버는 있지만 SQUAD LINK 관제 서버가 응답하지 않습니다 — 재시도 중', 3200);
     else if (st === 'live' && (this.liveWas === 'lost' || this.liveWas === 'upstream')) this.toast('SQUAD LINK 연결됨', 2200);
@@ -959,6 +970,7 @@ export class Maint {
     }
     this._renderLive();
     this._renderFleet();
+    this._maintPush();
   }
   /** Handled signal keys: always for this tab, in storage only when the rows they stand for are stored. */
   _takeSeen(seen, stored) {
@@ -988,6 +1000,7 @@ export class Maint {
       if (!row?.live) continue;
       const t = sig.at || at;
       row.live.count = (row.live.count || 1) + 1;
+      if (sig.key?.startsWith('ev:')) row.live.events = [...(Array.isArray(row.live.events) ? row.live.events : []), sig.key.slice(3)].slice(-EVENTS_MAX);
       if (t < (row.live.first || t)) row.live.first = t;
       if (t >= (row.live.last || '')) {
         row.live.last = t;
@@ -1029,6 +1042,88 @@ export class Maint {
       this.liveRender = false;
     }
   }
+  /** Readiness of one equipment for a subset of its rows (a soldier's live rows), or null for unknown equipment. */
+  _rate(key, rows) {
+    const def = this.scene.models.find((m) => m.key === key);
+    if (!def) return null;
+    const parts = this._partsFor(def), codes = new Set(parts.map((p) => p.code));
+    return this._diagnose(parts, rows.filter((r) => codes.has(r.part)), this._kb(key)).readiness;
+  }
+  /** Soldier label of a node as the control server shows it ('병사 02'), else the node id. */
+  _who(node) {
+    const s = (Array.isArray(this.link.snap?.soldiers) ? this.link.snap.soldiers : []).find((x) => x?.assigned_node_id === node);
+    return /^soldier_\d+$/.test(s?.soldier_id || '') ? `병사 ${s.soldier_id.slice(8)}(${node})` : node;
+  }
+  /** A toast that waits for the one just shown (a report answer follows the technician's own toast). */
+  _toastAfter(msg, ms = 3200) {
+    clearTimeout(this.toastLater);
+    this.toastLater = setTimeout(() => this.toast(msg, ms), Math.max(0, this.toastAt + 1800 - performance.now()));
+  }
+  /**
+   * Sends each mapped soldier's equipment state to the control server (POST /api/maintenance) when it changed,
+   * when the server has none (restart, demo reset) or when an inspected impact incident is still open there.
+   */
+  _maintPush() {
+    const L = this.link, snap = L.snap, M = this.mrep;
+    if (L.status !== 'live' || !snap || M.off) return;
+    let reports;
+    try {
+      const keys = new Set(Object.values(this.squad.map).filter(Boolean));
+      const rows = {}, names = {};
+      for (const key of keys) {
+        rows[key] = this._rowsFor(key);
+        names[key] = this._modelName(key);
+      }
+      reports = maintReports({ snap, config: L.config, map: this.squad.map, rows, names, rate: (key, list) => this._rate(key, list) });
+    } catch (e) {
+      console.error('maintenance report failed', e);
+      return;
+    }
+    const now = performance.now();
+    for (const rep of reports) {
+      const node = rep.node_id;
+      const sig = JSON.stringify([rep.status, rep.equipment, rep.reasons, rep.items]);
+      const server = (Array.isArray(snap.soldiers) ? snap.soldiers : []).find((s) => s?.assigned_node_id === node)?.maintenance;
+      if (M.sent[node] === sig && server && !rep.resolved_event_ids.length) continue;
+      if (M.busy[node] || now < (M.retryAt[node] || 0)) continue;
+      M.busy[node] = true;
+      const gen = L.gen;
+      L.post('maintenance', { schema_version: '1.0', reporter: 'HoloHand AI 정비', ...rep })
+        .then(({ ok, status, data }) => {
+          if (this.mrep !== M || gen !== L.gen) return; // reconnected meanwhile: the new connection reports again
+          if (ok) {
+            const before = M.status[node];
+            M.sent[node] = sig;
+            M.status[node] = rep.status;
+            M.retryAt[node] = performance.now() + 1500; // the next snapshot shows it; no repeat before that
+            M.err = '';
+            const who = this._who(node);
+            const closed = Array.isArray(data?.resolved) ? data.resolved.length : 0;
+            const msgs = [];
+            if (before && before !== rep.status) msgs.push(`${who} 장비 ${koShort(rep.status.toUpperCase())}`);
+            if (closed) msgs.push(`${who} 충격 사건 ${closed}건 정비 점검으로 종료`);
+            if (msgs.length && this.on) this._toastAfter(`관제 서버에 보고 · ${msgs.join(' · ')}`);
+          } else if (status === 404 || status === 405) {
+            // an older control server or bridge without the report: stop until the next connection
+            M.off = true;
+            M.err = '관제 서버 또는 중계 서버가 정비 보고를 받지 않습니다 (최신 squad-link · squad_bridge.mjs 필요)';
+            if (this.on) this.toast(M.err, 4200);
+          } else {
+            M.err = `정비 보고 거부 (${status}${data?.error ? ` · ${data.error}` : ''})`;
+            M.retryAt[node] = performance.now() + 10000;
+          }
+        })
+        .catch(() => {
+          if (this.mrep !== M) return;
+          M.err = '정비 보고 실패 — 재시도 중';
+          M.retryAt[node] = performance.now() + 5000;
+        })
+        .finally(() => {
+          M.busy[node] = false;
+          this._renderLive();
+        });
+    }
+  }
   /** Nodes of the control server with their mapping and state. */
   _liveNodes() {
     const snap = this.link.snap;
@@ -1056,8 +1151,12 @@ export class Maint {
     if (st === 'live' && snap) {
       const sim = snap.source === 'simulation';
       const nodes = this._liveNodes().filter((n) => n.model);
-      text = `SQUAD LINK 실시간 · <span class="${sim ? 'lv-sim' : 'lv-dev'}">${sim ? '가상 데이터' : '실장비'}</span>${nodes.map((n) => ` · <span class="lv-n">${esc(n.node)} <b style="color:${n.color}">${esc(n.ko)}</b></span>`).join('')}`;
-      title = [...this._liveNodes().map((n) => `${n.node} → ${n.model ? this._modelName(n.model) : '연결 안 함'} (${n.ko})`), '읽기 전용 — 관제 서버로는 아무것도 보내지 않습니다'].join('\n');
+      const M = this.mrep;
+      text = `SQUAD LINK 실시간 · <span class="${sim ? 'lv-sim' : 'lv-dev'}">${sim ? '가상 데이터' : '실장비'}</span>${nodes.map((n) => ` · <span class="lv-n">${esc(n.node)} <b style="color:${n.color}">${esc(n.ko)}</b></span>`).join('')}${M.err ? ` · <span class="lv-err">${esc(M.err)}</span>` : ''}`;
+      title = [
+        ...this._liveNodes().map((n) => `${n.node} → ${n.model ? this._modelName(n.model) : '연결 안 함'} (${n.ko})${M.status[n.node] ? ` · 장비 ${koShort(M.status[n.node].toUpperCase())} 보고` : ''}`),
+        '관제 서버에는 병사별 장비 상태와 점검을 끝낸 충격 사건의 종료만 보냅니다 (SOS·통신 사건은 건드리지 않음)',
+      ].join('\n');
       btn = this.liveMapOpen ? '닫기' : '연결 설정';
     } else if (st === 'connecting') text = 'SQUAD LINK 연결 중…';
     else if (st === 'upstream') text = '중계 서버 연결됨 · SQUAD LINK 관제 서버 응답 없음 — 재시도 중';
@@ -1087,8 +1186,11 @@ export class Maint {
     const kinds = (cls) => Object.keys(RULES).filter((k) => RULES[k].node === cls);
     const fits = (cls) => this.scene.models.filter((m) => m.key && (ANCHORS[m.key] || []).some((a) => kinds(cls).includes(a.id)));
     const html = nodes
-      .map((n) => `<label>${esc(n.node)}</label><select data-node="${esc(n.node)}"><option value="">연결 안 함</option>${fits(n.cls).map((m) => `<option value="${esc(m.key)}"${m.key === n.model ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`)
-      .join('') + '<p>병사 노드(halo) = HaloPod · 환경 노드(env) = 설치 지점(Turret 가정) · 변경은 이후 신호부터 적용</p>';
+      .map((n) => {
+        const st = n.cls === 'soldier' ? this.mrep.status[n.node] : '';
+        return `<label>${esc(n.node)}</label><select data-node="${esc(n.node)}"><option value="">연결 안 함</option>${fits(n.cls).map((m) => `<option value="${esc(m.key)}"${m.key === n.model ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}</select><span class="mp-st ${esc(st)}">${st ? koShort(st.toUpperCase()) : ''}</span>`;
+      })
+      .join('') + '<p>병사 노드(halo) = HaloPod · 환경 노드(env) = 설치 지점(Turret 가정) · 변경은 이후 신호부터 적용 · 오른쪽 = 관제 서버에 보고한 병사 장비 상태</p>';
     if (html !== this._mapHtml) {
       this._mapHtml = html;
       this.$map.innerHTML = html;

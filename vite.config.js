@@ -4,15 +4,16 @@ import { viteSingleFile } from 'vite-plugin-singlefile';
 // npm run build        -> dist/ : static site (index.html + assets), host it anywhere (GitHub Pages, any web server)
 // npm run build:single -> release/HoloHand-STL.html : one file with code and models inside, opens by double-click
 // SQUAD_URL=http://<control-server>:8080 npm run dev -> the AI 정비 mode follows SQUAD LINK live through
-// /squad/api/* (read-only GETs; same job as tools/squad_bridge.mjs for the single file)
+// /squad/api/* (GETs + the maintenance report; same job as tools/squad_bridge.mjs for the single file)
 const squad = process.env.SQUAD_URL
   ? {
       '/squad/api': {
         target: process.env.SQUAD_URL,
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/squad/, ''),
-        // read-only: anything but GET config / state / stream gets a 404 instead of reaching the server
-        bypass: (req) => (req.method === 'GET' && /^\/squad\/api\/(config|state|stream)(\?|$)/.test(req.url) ? undefined : false),
+        // GET config / state / stream and POST maintenance only: anything else gets a 404 instead of the server
+        bypass: (req) =>
+          (req.method === 'GET' && /^\/squad\/api\/(config|state|stream)(\?|$)/.test(req.url)) || (req.method === 'POST' && /^\/squad\/api\/maintenance(\?|$)/.test(req.url)) ? undefined : false,
       },
     }
   : undefined;

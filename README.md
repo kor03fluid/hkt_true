@@ -146,13 +146,13 @@ Turret은 B 베이스 / Y 회전축 / H 센서·시연 장치 / L 지지구조, 
   - 오탐 → AI 판독 오류로 기록 (직접 등록한 결함은 등록 취소)
 - 결과가 바뀔 때마다 부품 건강도 · 기능 · 장비 판정이 바로 다시 계산되고, **이력** 탭에 작업지시 번호, 정비자, 소요 시간과 예상 시간이 남습니다. **보고서**(인쇄용)와 **JSON 저장**으로 내보낼 수 있습니다.
 
-### 4. SQUAD LINK 실시간 연동 (읽기 전용)
+### 4. SQUAD LINK 실시간 연동 (신호 수신 + 정비 결과 보고)
 
-팀 관제 서버(CLIKA_1 `squad-link`)의 상태를 따라가며, 현장 신호를 **점검 항목**으로 바꿔 진단망에 넣습니다. 관제 서버로는 아무것도 보내지 않습니다(확인·해결·주입 불가).
+팀 관제 서버(CLIKA_1 `squad-link`)의 상태를 따라가며, 현장 신호를 **점검 항목**으로 바꿔 진단망에 넣습니다. 관제 서버로 보내는 것은 **정비 결과** 하나뿐입니다: 병사별 장비 상태(운용 가능 / 제한 운용 / 운용 불가)와, 정비자가 점검을 끝낸 충격 사건의 종료. SOS·통신 두절 사건을 확인·종료하거나 장치 데이터를 넣는 일은 하지 않습니다.
 
 ```
 node squad-link/server.mjs                         # 팀 관제 서버 (기본 8080, 가상 데이터)
-node tools/squad_bridge.mjs http://<관제서버>:8080   # 한 파일 뷰어 + 읽기 전용 중계 (8095)
+node tools/squad_bridge.mjs http://<관제서버>:8080   # 한 파일 뷰어 + 중계 (8095, 읽기 + 정비 보고)
 → http://localhost:8095/#maint
 ```
 
@@ -170,6 +170,14 @@ node tools/squad_bridge.mjs http://<관제서버>:8080   # 한 파일 뷰어 + �
 - 같은 노드의 같은 신호가 반복되면 열린 항목에 횟수가 쌓입니다. 처리한 사건은 기억해서 새로고침해도 중복되지 않습니다.
 - 가상 데이터(`source: simulation`)는 항목·보고서에 **가상 데이터**로 표시합니다. 노드 → 장비 연결은 패널의 **연결 설정**에서 바꿉니다.
 - 점검 위치는 `tools/live_anchors_spec.json` → `python3 -I tools/place_defects.py --anchors` 로 부품 표면에 배치·검증합니다(`web/live_anchors.json`).
+
+**정비 결과 보고** (`POST /api/maintenance`, AI 정비 모드가 켜져 연결된 동안)
+
+- 병사 노드마다 그 병사에게서 온 실시간 항목만으로 장비 판정을 계산해 보냅니다. 예시·수동·불러온 결함은 장비 종류의 것이라 병사 상태에 넣지 않습니다. SQUAD LINK 분대원 목록에 **장비 운용 가능 / 제한 운용 / 운용 불가**와 남은 점검 항목이 뜹니다.
+- 충격 항목을 **점검 완료** 또는 **이상 없음**으로 닫으면 그 충격 사건을 관제 서버에서 '정비 점검으로 종료' 처리하고, 병사 장비가 **운용 가능**으로 돌아갑니다. 센서 고장은 수리 후 **재검사 합격**까지 마쳐야 운용 가능입니다.
+- 상태가 바뀔 때, 다시 연결될 때, 관제 서버에 보고가 없을 때(재시작·시연 초기화) 보냅니다. 보고가 거부되거나 실패하면 연결 줄에 표시하고 다시 시도합니다. 노드별 보고 상태는 **연결 설정**에서 보입니다.
+- 관제 서버의 **무작위 이슈**(가상 모드, squad-link `simulation.random_issues`)를 켜 두면, 병사 장비가 운용 가능으로 보고된 뒤 1~3분 안에 다음 충격·센서 고장·송신 중단이 무작위로 생겨 점검 → 정비 → 운용 가능이 반복됩니다.
+- 중계 서버는 이 한 가지 쓰기(JSON)만 통과시키며, 이 화면 자신의 주소나 `--allow-origin` 으로 허용한 페이지에서 온 것만 받습니다.
 
 ### 데이터 바꾸기
 
@@ -208,7 +216,7 @@ tools/explode.json       부품별 분해 이동량 (mm)
 tools/parts_info.json    부품 이름 · 계열 · 설명
 tools/place_defects.py   예시 결함을 표면에 정확히 배치·검증 (tools/defects_spec.json → web/defects.json)
 tools/test_diagnosis.mjs 진단 규칙 · 지식베이스 · 예시 판정 · 실시간 연동 테스트
-tools/squad_bridge.mjs   SQUAD LINK 읽기 전용 중계 + 한 파일 뷰어 제공 (http://localhost:8095/#maint)
+tools/squad_bridge.mjs   SQUAD LINK 중계 (읽기 + 정비 보고) + 한 파일 뷰어 제공 (http://localhost:8095/#maint)
 web/live_anchors.json    실시간 신호 점검 위치 (tools/live_anchors_spec.json → place_defects.py --anchors)
 web/defects.json         예시 결함 (STL 좌표)
 web/maintenance.json     예시 정비 지식베이스
@@ -216,7 +224,7 @@ src/main.js              앱 루프, 손 오버레이, 제스처 → 동작, 이
 src/scene.js             Three.js STL 렌더러: 분해, 부품 이동/회전, 선택(BVH 레이캐스트), X-ray, 단독 보기, 결함 셰이더 · 스캔 · 결함 초점 · 분해 절차 보기
 src/diagnosis.js         진단 엔진: 위험도 · 우선순위 · 조치 · 정비 단계 · 판정 · 수리 절차 · 결과 반영
 src/maint.js             AI 정비 모드 UI: 진단 패널, 결함 핀 · 설명, 수리 절차, 결과 등록, 이력 · 보고서, 실시간 연동 표시
-src/squad.js             SQUAD LINK 연결(SSE) · 신호 → 점검 항목 규칙
+src/squad.js             SQUAD LINK 연결(SSE) · 신호 → 점검 항목 규칙 · 병사별 정비 결과 보고
 src/library.js           web/models 자동 탐색, 폴더 열기 / 드래그 앤 드롭 (STL + parts.json)
 src/handTracking.js      MediaPipe 래퍼 (HoloHand 그대로)
 src/gestureEngine.js     랜드마크 → 제스처 · 손 펴짐 · 손목 회전 (HoloHand 그대로)
